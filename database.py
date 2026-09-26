@@ -112,13 +112,44 @@ def create_tables():
             "consent": "INTEGER NOT NULL DEFAULT 0",
             "consent_text": "TEXT",
             "consent_at": "TEXT",
-            "submitted_at": "TEXT"
+            "submitted_at": "TEXT",
+            "admin_notes": "TEXT NOT NULL DEFAULT ''",
+            "verified_at": "TEXT",
+            "verified_by": "TEXT",
+            "reviewed_at": "TEXT",
+            "reviewed_by": "TEXT",
+            "review_version": "INTEGER NOT NULL DEFAULT 0"
         }
     }.items():
         existing = {row[1] for row in cursor.execute("PRAGMA table_info(" + table + ")")}
         for column, definition in columns.items():
             if column not in existing:
                 cursor.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admin_review_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            application_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+            token_hash TEXT PRIMARY KEY,
+            credential_version TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admin_login_attempts (
+            attempted_at INTEGER NOT NULL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS admin_attempt_time ON admin_login_attempts(attempted_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS admin_event_application ON admin_review_events(application_id)")
 
     connection.commit()
     connection.close()
@@ -396,7 +427,10 @@ def submit_support_buddy_application(sender, consent_text):
                 "INSERT INTO support_buddy_applications (sender, " + columns +
                 ", status, submitted_at) VALUES (?, " + placeholders + ", 'pending', ?) "
                 "ON CONFLICT(sender) DO UPDATE SET " + updates +
-                ", status = 'pending', submitted_at = excluded.submitted_at",
+                ", status = 'pending', submitted_at = excluded.submitted_at, "
+                "admin_notes = '', verified_at = NULL, verified_by = NULL, "
+                "reviewed_at = NULL, reviewed_by = NULL, "
+                "review_version = support_buddy_applications.review_version + 1",
                 (sender,) + tuple(values[key] for key in SUPPORT_BUDDY_FIELDS) + (now,)
             )
             connection.execute("DELETE FROM support_buddy_drafts WHERE sender = ?", (sender,))
@@ -666,3 +700,111 @@ if __name__ == "__main__":
 
     for match_request in get_match_requests():
         print(match_request)
+
+# Admin queries only return explicitly submitted applications.
+def list_admin_applications(status="pending", page=1, page_size=25):
+    if status not in ("pending", "approved", "rejected", "all"):
+        raise ValueError("Invalid application filter.")
+    page = max(1, page)
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        where = "submitted_at IS NOT NULL"
+        params = []
+        if status == "rejected":
+            where += " AND status IN ('rejected', 'declined')"
+        elif status != "all":
+            where += " AND status = ?"
+            params.append(status)
+        count = connection.execute(
+            "SELECT COUNT(*) FROM support_buddy_applications WHERE " + where, params
+        ).fetchone()[0]
+        rows = connection.execute(
+            "SELECT id, full_name, display_name, rdss_member, status, submitted_at, "
+            "verification_required, verified_at FROM support_buddy_applications WHERE " + where +
+            " ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, submitted_at DESC, id DESC "
+            "LIMIT ? OFFSET ?", params + [page_size, (page - 1) * page_size]
+        ).fetchall()
+        counts = {"pending": 0, "approved": 0, "rejected": 0}
+        for row in connection.execute(
+            "SELECT status, COUNT(*) AS total FROM support_buddy_applications "
+            "WHERE submitted_at IS NOT NULL GROUP BY status"
+        ):
+            key = "rejected" if row["status"] == "declined" else row["status"]
+            counts[key] = counts.get(key, 0) + row["total"]
+        return [dict(row) for row in rows], count, counts
+    finally:
+        connection.close()
+
+
+def get_admin_application(application_id):
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT * FROM support_buddy_applications WHERE id = ? AND submitted_at IS NOT NULL",
+            (application_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def get_admin_review_events(application_id):
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM admin_review_events WHERE application_id = ? ORDER BY id DESC",
+            (application_id,)
+        )]
+    finally:
+        connection.close()
+
+
+def review_support_buddy_application(application_id, action, notes, actor, version):
+    if action not in ("notes", "verify", "approve", "reject"):
+        raise ValueError("Unknown review action.")
+    if len(notes) > 4000:
+        raise ValueError("Please keep notes to 4,000 characters or fewer.")
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM support_buddy_applications WHERE id = ? AND submitted_at IS NOT NULL",
+                (application_id,)
+            ).fetchone()
+            if row is None:
+                raise LookupError("Application not found.")
+            if row["review_version"] != version:
+                raise ValueError("This application changed since you opened it. Reload it before saving.")
+            if action != "notes" and row["status"] != "pending":
+                raise ValueError("This application has already been reviewed.")
+            if action == "verify" and not row["verification_required"]:
+                raise ValueError("This applicant does not need extra verification.")
+            if action == "verify" and row["verified_at"]:
+                raise ValueError("Verification is already complete.")
+            if action == "approve":
+                if row["verification_required"] and not row["verified_at"]:
+                    raise ValueError("Complete non-member verification before approving.")
+                if not row["consent"] or not row["consent_at"] or not row["consent_text"]:
+                    raise ValueError("The applicant must give consent before approval.")
+            updates = {"admin_notes": notes, "review_version": version + 1}
+            now = connection.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0]
+            if action == "verify":
+                updates.update(verified_at=now, verified_by=actor)
+            elif action in ("approve", "reject"):
+                updates.update(status="approved" if action == "approve" else "rejected",
+                               reviewed_at=now, reviewed_by=actor)
+            connection.execute(
+                "UPDATE support_buddy_applications SET " + ", ".join(key + " = ?" for key in updates) +
+                " WHERE id = ?", tuple(updates.values()) + (application_id,)
+            )
+            connection.execute(
+                "INSERT INTO admin_review_events (application_id, action, actor, notes) VALUES (?, ?, ?, ?)",
+                (application_id, action, actor, notes)
+            )
+    finally:
+        connection.close()

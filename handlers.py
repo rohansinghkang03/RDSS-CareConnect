@@ -2,6 +2,9 @@ import hmac
 import os
 
 from chatbot import ask_careconnect
+from dotenv import load_dotenv
+
+load_dotenv()
 
 ADMIN_PHONE_NUMBER = os.getenv("ADMIN_PHONE_NUMBER", "")
 ADMIN_PIN = os.getenv("ADMIN_PIN", "")
@@ -11,6 +14,10 @@ from database import (
     cancel_support_buddy_draft,
     get_support_buddy_application,
     get_support_buddy_draft,
+    get_admin_application,
+    list_admin_applications,
+    review_support_buddy_application,
+    get_admin_review_events,
     submit_support_buddy_application,
     create_user,
     get_latest_match_request,
@@ -141,6 +148,176 @@ def begin_registration(sender):
     return "Become a CareConnect Support Buddy\n\n" + registration_destination(sender, next_registration_step(draft))
 
 
+def admin_menu_reply():
+    return """
+Admin menu
+
+1. View pending applications
+2. Application summary
+3. Log out
+"""
+
+
+def admin_application_list():
+    applications, total, counts = list_admin_applications("pending", 1, 25)
+    if not applications:
+        return "No pending Support Buddy applications.\n\n" + admin_menu_reply()
+
+    lines = ["Pending Support Buddy applications", ""]
+    for index, application in enumerate(applications, 1):
+        member_label = "RDSS member" if application["rdss_member"] == "Yes" else "Non-member"
+        verification = " · verification needed" if application["verification_required"] and not application["verified_at"] else ""
+        lines.append(
+            f"{index}. {application['full_name']} — {member_label}{verification}"
+        )
+    lines += ["", "Reply with an application number to open it.", "Type 'menu' to return to the admin menu."]
+    return "\n".join(lines)
+
+
+def admin_application_summary():
+    _, _, counts = list_admin_applications("all", 1, 1)
+    return (
+        "Support Buddy application summary\n\n"
+        f"Pending: {counts.get('pending', 0)}\n"
+        f"Approved: {counts.get('approved', 0)}\n"
+        f"Not approved: {counts.get('rejected', 0)}\n\n"
+        + admin_menu_reply()
+    )
+
+
+def admin_application_detail(application_id):
+    application = get_admin_application(application_id)
+    if application is None:
+        return "That application is no longer available.\n\n" + admin_application_list()
+
+    verification = "Not required"
+    if application["verification_required"]:
+        verification = "Complete" if application["verified_at"] else "Required before approval"
+    lines = [
+        "Support Buddy application",
+        "",
+        f"Name: {application['full_name']}",
+        f"Display name: {application['display_name'] or 'Support Buddy'}",
+        f"RDSS member: {application['rdss_member']}",
+        f"Languages: {(application['languages'] or '').replace('|', ', ')}",
+        f"Experience: {application['caregiver_experience']}",
+        f"Support offered: {(application['support_types'] or '').replace('|', ', ')}",
+        f"Availability: {(application['availability'] or '').replace('|', ', ')}",
+        f"Contact: {(application['contact_methods'] or '').replace('|', ', ')}",
+        f"Introduction: {application['introduction'] or 'Skipped'}",
+        f"Verification: {verification}",
+        f"Status: {application['status']}",
+        "",
+        "1. Approve",
+        "2. Reject",
+        "3. Mark verification complete",
+        "4. Add private note",
+        "5. Back to applications",
+    ]
+    if application["admin_notes"]:
+        lines.insert(-5, f"Private note: {application['admin_notes']}")
+    return "\n".join(lines)
+
+
+def admin_application_id_for_choice(choice):
+    applications, _, _ = list_admin_applications("pending", 1, 25)
+    try:
+        index = int(choice) - 1
+    except ValueError:
+        return None
+    if index < 0 or index >= len(applications):
+        return None
+    return applications[index]["id"]
+
+
+def handle_admin_message(sender, text, state):
+    command = text.strip().lower()
+
+    if command == "admin login":
+        update_user(sender, state="admin_pin")
+        return "Enter your admin PIN."
+
+    if state == "admin_pin":
+        if hmac.compare_digest(command, ADMIN_PIN):
+            update_user(sender, state="admin_menu")
+            return "Admin login successful.\n\n" + admin_menu_reply()
+        return "Incorrect PIN. Try again or type 'menu'."
+
+    if state == "admin_menu":
+        if command == "1":
+            update_user(sender, state="admin_applications")
+            return admin_application_list()
+        if command == "2":
+            return admin_application_summary()
+        if command in ("3", "admin logout", "menu"):
+            update_user(sender, state="main_menu")
+            return "You have been logged out."
+        return "Please choose 1, 2 or 3.\n\n" + admin_menu_reply()
+
+    if state == "admin_applications":
+        if command in ("menu", "back"):
+            update_user(sender, state="admin_menu")
+            return admin_menu_reply()
+        application_id = admin_application_id_for_choice(command)
+        if application_id is None:
+            return "Please reply with a listed application number, or type 'menu'.\n\n" + admin_application_list()
+        update_user(sender, state=f"admin_review_{application_id}")
+        return admin_application_detail(application_id)
+
+    if state.startswith("admin_review_"):
+        application_id = int(state.rsplit("_", 1)[1])
+        application = get_admin_application(application_id)
+        if application is None:
+            update_user(sender, state="admin_applications")
+            return admin_application_list()
+        if command == "5":
+            update_user(sender, state="admin_applications")
+            return admin_application_list()
+        if command == "4":
+            update_user(sender, state=f"admin_note_{application_id}")
+            return "Type the private admin note to save, or type 'cancel'."
+        if command not in ("1", "2", "3"):
+            return "Please choose 1, 2, 3, 4 or 5.\n\n" + admin_application_detail(application_id)
+        action = {"1": "approve", "2": "reject", "3": "verify"}[command]
+        try:
+            review_support_buddy_application(
+                application_id,
+                action,
+                application["admin_notes"] or "",
+                sender,
+                application["review_version"]
+            )
+        except (LookupError, ValueError) as error:
+            return str(error) + "\n\n" + admin_application_detail(application_id)
+        update_user(sender, state="admin_applications")
+        label = {"approve": "approved", "reject": "rejected", "verify": "marked verified"}[action]
+        return f"Application {label}.\n\n" + admin_application_list()
+
+    if state.startswith("admin_note_"):
+        application_id = int(state.rsplit("_", 1)[1])
+        if command == "cancel":
+            update_user(sender, state=f"admin_review_{application_id}")
+            return admin_application_detail(application_id)
+        application = get_admin_application(application_id)
+        if application is None:
+            update_user(sender, state="admin_applications")
+            return admin_application_list()
+        try:
+            review_support_buddy_application(
+                application_id,
+                "notes",
+                text.strip(),
+                sender,
+                application["review_version"]
+            )
+        except (LookupError, ValueError) as error:
+            return str(error) + "\n\nType another note or 'cancel'."
+        update_user(sender, state=f"admin_review_{application_id}")
+        return "Private note saved.\n\n" + admin_application_detail(application_id)
+
+    return None
+
+
 def handle_registration(sender, text, state):
     answer = text.strip()
     command = answer.lower()
@@ -242,47 +419,9 @@ def handle_message(sender, text):
     text = text.strip().lower()
 
     if sender == ADMIN_PHONE_NUMBER:
-        if text == "admin login":
-            update_user(
-                sender,
-                state="admin_pin"
-            )
-
-            return "Enter your admin PIN."
-
-        if state == "admin_pin":
-            if hmac.compare_digest(text, ADMIN_PIN):
-                update_user(
-                    sender,
-                    state="admin_menu"
-                )
-
-                return """
-Admin login successful.
-
-1. View pending applications
-2. Application status
-3. Log out
-"""
-
-            return "Incorrect PIN. Try again or type 'menu'."
-
-        if state == "admin_menu":
-            if text == "1":
-                return "Pending application lists will be added next."
-
-            if text == "2":
-                return "Application status tools will be added next."
-
-            if text in ("3", "admin logout", "menu"):
-                update_user(
-                    sender,
-                    state="main_menu"
-                )
-
-                return "You have been logged out."
-
-            return "Please choose 1, 2 or 3."
+        admin_reply = handle_admin_message(sender, text, state)
+        if admin_reply is not None:
+            return admin_reply
 
     if text.strip().lower() in ("application status", "application_status"):
         return application_status_reply(sender)
