@@ -1,4 +1,10 @@
+import hmac
+import os
+
 from chatbot import ask_careconnect
+
+ADMIN_PHONE_NUMBER = os.getenv("ADMIN_PHONE_NUMBER", "")
+ADMIN_PIN = os.getenv("ADMIN_PIN", "")
 
 from database import (
     create_match_request,
@@ -117,7 +123,7 @@ def application_status_reply(sender):
         reply = "Support Buddy application\n\nStatus: " + label
         reply += "\nSubmitted: " + application["submitted_at"] + " UTC"
         if application["verification_required"]:
-            reply += "\nExtra verification is required for non-RDSS members."
+            reply += "\nExtra verification: " + ("Complete" if application.get("verified_at") else "Required for non-RDSS members")
         if get_support_buddy_draft(sender):
             reply += "\nYou also have an unfinished draft. Choose 4 from the menu to resume."
         return reply + "\n\nType 'menu' to return to the main menu."
@@ -232,6 +238,51 @@ def handle_message(sender, text):
         user = get_user(sender)
 
     state = user["state"]
+
+    text = text.strip().lower()
+
+    if sender == ADMIN_PHONE_NUMBER:
+        if text == "admin login":
+            update_user(
+                sender,
+                state="admin_pin"
+            )
+
+            return "Enter your admin PIN."
+
+        if state == "admin_pin":
+            if hmac.compare_digest(text, ADMIN_PIN):
+                update_user(
+                    sender,
+                    state="admin_menu"
+                )
+
+                return """
+Admin login successful.
+
+1. View pending applications
+2. Application status
+3. Log out
+"""
+
+            return "Incorrect PIN. Try again or type 'menu'."
+
+        if state == "admin_menu":
+            if text == "1":
+                return "Pending application lists will be added next."
+
+            if text == "2":
+                return "Application status tools will be added next."
+
+            if text in ("3", "admin logout", "menu"):
+                update_user(
+                    sender,
+                    state="main_menu"
+                )
+
+                return "You have been logged out."
+
+            return "Please choose 1, 2 or 3."
 
     if text.strip().lower() in ("application status", "application_status"):
         return application_status_reply(sender)
