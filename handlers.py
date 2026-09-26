@@ -11,7 +11,7 @@ from database import (
 
 from matching import find_matches
 
-from resources import get_resources, get_resource_reply
+from resources import get_resource_reply, get_resources_menu
 
 def handle_message(sender, text):
     user = get_user(sender)
@@ -135,6 +135,9 @@ Type 'menu' anytime to return to the main menu.
     elif state == "ai_chat":
         return ask_careconnect(sender,text)
 
+    elif state == "resources_menu":
+        return get_resource_reply(text)
+    
     elif state == "buddy_mood":
         moods = {
             "1": "Okay",
