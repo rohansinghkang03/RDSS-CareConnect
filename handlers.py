@@ -11,6 +11,8 @@ from database import (
 
 from matching import find_matches
 
+from resources import get_resources, get_resource_reply
+
 def handle_message(sender, text):
     user = get_user(sender)
 
@@ -118,8 +120,13 @@ Type 'menu' anytime to return to the main menu.
 """
 
         elif text == "3":
-            return "RDSS resources will be added here."
+            update_user(
+                sender,
+                state="resources_menu"
+            )
 
+            return get_resources_menu()
+        
         elif text == "4":
             return "RDSS contact information will be added here."
 
