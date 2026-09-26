@@ -2,16 +2,20 @@ from chatbot import ask_careconnect
 
 from database import (
     create_match_request,
+    create_support_buddy_application,
     create_user,
     get_latest_match_request,
     get_user,
     reset_user,
+    start_support_buddy_draft,
+    update_support_buddy_draft,
     update_user
 )
 
 from matching import find_matches
 
 from resources import get_resource_reply, get_resources_menu
+
 
 def handle_message(sender, text):
     user = get_user(sender)
@@ -82,7 +86,8 @@ Welcome to RDSS CareConnect
 1. Find a Buddy
 2. Talk to CareConnect AI
 3. Resources
-4. Contact RDSS
+4. Become a Support Buddy
+5. Contact RDSS
 
 You can also type 'status' to check a match request.
 """
@@ -126,18 +131,208 @@ Type 'menu' anytime to return to the main menu.
             )
 
             return get_resources_menu()
-        
+
         elif text == "4":
+            create_support_buddy_application(sender)
+            start_support_buddy_draft(sender)
+
+            update_user(
+                sender,
+                state="buddy_registration_name"
+            )
+
+            return """
+Become a CareConnect Support Buddy
+
+Thank you for considering supporting another caregiver.
+
+Before we begin, what is your full name?
+
+This will only be visible to RDSS to review your application.
+
+You may use a nickname later for your public CareConnect profile.
+"""
+
+        elif text == "5":
             return "RDSS contact information will be added here."
 
-        return "Please type 1, 2, 3 or 4. Type 'menu' to restart."
+        return "Please type 1, 2, 3, 4 or 5. Type 'menu' to restart."
 
     elif state == "ai_chat":
-        return ask_careconnect(sender,text)
+        return ask_careconnect(sender, text)
 
     elif state == "resources_menu":
         return get_resource_reply(text)
-    
+
+    elif state == "buddy_registration_name":
+        update_user(
+            sender,
+            state="buddy_registration_rdss",
+            full_name=text
+        )
+
+        update_support_buddy_draft(
+            sender,
+            full_name=text
+        )
+
+        return """
+Are you currently part of the RDSS community?
+
+1. Yes
+2. No
+"""
+
+    elif state == "buddy_registration_rdss":
+        if text == "1":
+            update_support_buddy_draft(
+                sender,
+                rdss_member="Yes",
+                verification_required=0
+            )
+        elif text == "2":
+            update_support_buddy_draft(
+                sender,
+                rdss_member="No",
+                verification_required=1
+            )
+        else:
+            return "Please type 1 for Yes or 2 for No."
+
+        update_user(
+            sender,
+            state="buddy_registration_display_name"
+        )
+
+        return """
+What would you like other caregivers to know you as?
+
+You may use:
+- your first name
+- a nickname
+- something like "Mum of Ethan"
+
+Type 'skip' if you would prefer not to choose a display name.
+"""
+
+    elif state == "buddy_registration_display_name":
+        if text == "skip":
+            display_name = None
+        else:
+            display_name = text
+
+        update_support_buddy_draft(
+            sender,
+            display_name=display_name
+        )
+
+        update_user(
+            sender,
+            state="buddy_registration_languages"
+        )
+
+        return """
+Which languages are you comfortable chatting in?
+
+You may choose more than one.
+
+1. English
+2. Mandarin
+3. Malay
+4. Tamil
+5. Other
+
+Reply with the numbers separated by commas.
+
+Example:
+1,2
+"""
+
+    elif state == "buddy_registration_languages":
+        language_options = {
+            "1": "English",
+            "2": "Mandarin",
+            "3": "Malay",
+            "4": "Tamil",
+            "5": "Other"
+        }
+
+        selections = [
+            item.strip()
+            for item in text.replace(" ", ",").split(",")
+            if item.strip()
+        ]
+
+        if not selections:
+            return "Please choose at least one language."
+
+        if any(choice not in language_options for choice in selections):
+            return """
+Please choose using the numbers provided.
+
+Example:
+1,2
+"""
+
+        selected_languages = []
+
+        for choice in selections:
+            language = language_options[choice]
+            if language not in selected_languages:
+                selected_languages.append(language)
+
+        update_support_buddy_draft(
+            sender,
+            languages="|".join(selected_languages)
+        )
+
+        update_user(
+            sender,
+            state="buddy_registration_experience"
+        )
+
+        return """
+How long have you been a caregiver?
+
+1. Less than 1 year
+2. 1-3 years
+3. 3-5 years
+4. More than 5 years
+"""
+
+    elif state == "buddy_registration_experience":
+        experience_options = {
+            "1": "Less than 1 year",
+            "2": "1-3 years",
+            "3": "3-5 years",
+            "4": "More than 5 years"
+        }
+
+        if text not in experience_options:
+            return "Please choose 1, 2, 3 or 4."
+
+        update_support_buddy_draft(
+            sender,
+            caregiver_experience=experience_options[text]
+        )
+        update_user(sender, state="buddy_registration_draft_saved")
+
+        # Later registration and submission steps are not implemented yet.
+        return """
+Your Support Buddy details have been saved as a draft.
+
+The remaining registration steps are not available yet. Your application has not been submitted for review.
+
+Type 'menu' to return to the main menu.
+"""
+
+    elif state == "buddy_registration_draft_saved":
+        return """
+Your Support Buddy details are saved as a draft. The remaining registration steps are not available yet.
+
+Type 'menu' to return to the main menu.
+"""
+
     elif state == "buddy_mood":
         moods = {
             "1": "Okay",
@@ -302,4 +497,3 @@ Type 'menu' to return to the main menu.
         return "You are currently matched."
 
     return "Type 'menu' to return to the main menu."
-
