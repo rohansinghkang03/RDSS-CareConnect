@@ -3,6 +3,11 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from database import (
+    get_recent_conversation,
+    save_conversation_message
+)
+
 load_dotenv()
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
@@ -36,15 +41,34 @@ or professional support rather than relying on CareConnect alone.
 """
 
 
-def ask_careconnect(message):
+def ask_careconnect(sender, message):
     try:
+        save_conversation_message(
+            sender,
+            "user",
+            message
+        )
+
+        history = get_recent_conversation(
+            sender,
+            limit=10
+        )
+
         response = client.responses.create(
             model=MODEL,
             instructions=CARECONNECT_INSTRUCTIONS,
-            input=message
+            input=history
         )
 
-        return response.output_text
+        reply = response.output_text
+
+        save_conversation_message(
+            sender,
+            "assistant",
+            reply
+        )
+
+        return reply
 
     except Exception as error:
         print("CareConnect AI error:")

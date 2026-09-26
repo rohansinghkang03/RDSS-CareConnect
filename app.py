@@ -1,5 +1,9 @@
 from flask import Flask, request
 
+from chatbot import ask_careconnect
+
+from whatsapp import send_message
+
 from database import (
     create_match_request,
     create_tables,
@@ -150,7 +154,18 @@ How are you feeling today?
 """
 
         elif text == "2":
-            return "CareConnect AI will be added soon."
+            update_user(
+                sender,
+                state="ai_chat"
+            )
+
+            return """
+CareConnect AI is here to listen.
+
+You can talk to me about how you're feeling, what you're going through, or anything that's on your mind.
+
+Type 'menu' anytime to return to the main menu.
+"""
 
         elif text == "3":
             return "RDSS resources will be added here."
@@ -159,6 +174,9 @@ How are you feeling today?
             return "RDSS contact information will be added here."
 
         return "Please type 1, 2, 3 or 4. Type 'menu' to restart."
+
+    elif state == "ai_chat":
+        return ask_careconnect(sender,text)
 
     elif state == "buddy_mood":
         moods = {
@@ -415,6 +433,8 @@ def receive_message():
                 text = message["text"]["body"].strip().lower()
 
                 reply = handle_message(sender, text)
+
+                send_message(sender, reply)
 
                 print("\n========== NEW MESSAGE ==========")
                 print("From:", sender)

@@ -45,6 +45,16 @@ def create_tables():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender TEXT NOT NULL,
+            role TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     connection.commit()
     connection.close()
 
@@ -333,6 +343,71 @@ def update_match_request_status(request_id, status):
         status,
         request_id
     ))
+
+    connection.commit()
+    connection.close()
+
+
+def save_conversation_message(sender, role, message):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        INSERT INTO conversation_messages (
+            sender,
+            role,
+            message
+        )
+        VALUES (?, ?, ?)
+    """, (
+        sender,
+        role,
+        message
+    ))
+
+    connection.commit()
+    connection.close()
+
+
+def get_recent_conversation(sender, limit=10):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT role, message
+        FROM conversation_messages
+        WHERE sender = ?
+        ORDER BY id DESC
+        LIMIT ?
+    """, (
+        sender,
+        limit
+    ))
+
+    rows = cursor.fetchall()
+    connection.close()
+
+    rows.reverse()
+
+    messages = []
+
+    for row in rows:
+        messages.append({
+            "role": row[0],
+            "content": row[1]
+        })
+
+    return messages
+
+
+def clear_conversation(sender):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        DELETE FROM conversation_messages
+        WHERE sender = ?
+    """, (sender,))
 
     connection.commit()
     connection.close()
