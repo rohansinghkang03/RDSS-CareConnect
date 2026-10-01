@@ -98,6 +98,14 @@ def create_tables():
 
     # Additive migration: preserve existing users, drafts and applications.
     for table, columns in {
+        "match_requests": {
+            "buddy_id": "INTEGER",
+            "buddy_sender": "TEXT",
+            "support_type": "TEXT",
+            "availability": "TEXT",
+            "created_at": "TEXT",
+            "responded_at": "TEXT"
+        },
         "support_buddy_drafts": {
             "introduction": "TEXT",
             "consent": "INTEGER NOT NULL DEFAULT 0",
@@ -126,6 +134,18 @@ def create_tables():
             if column not in existing:
                 cursor.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS match_previews (
+            requester TEXT PRIMARY KEY,
+            buddy_id INTEGER NOT NULL,
+            buddy_sender TEXT NOT NULL,
+            caregiver_name TEXT NOT NULL,
+            match_percentage INTEGER NOT NULL,
+            support_type TEXT,
+            availability TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS buddy_request_inbox ON match_requests(buddy_sender, status, id)")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS admin_review_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -461,6 +481,7 @@ def reset_user(sender):
         WHERE sender = ?
     """, (sender,))
 
+    cursor.execute("DELETE FROM match_previews WHERE requester = ?", (sender,))
     connection.commit()
     connection.close()
 
@@ -524,7 +545,7 @@ def get_latest_match_request(requester):
     cursor = connection.cursor()
 
     cursor.execute("""
-        SELECT id, requester, caregiver_name, match_percentage, status
+        SELECT id, requester, caregiver_name, match_percentage, status, buddy_id
         FROM match_requests
         WHERE requester = ?
         ORDER BY id DESC
@@ -542,7 +563,8 @@ def get_latest_match_request(requester):
         "requester": row[1],
         "caregiver_name": row[2],
         "match_percentage": row[3],
-        "status": row[4]
+        "status": row[4],
+        "buddy_id": row[5]
     }
 
 
@@ -555,6 +577,7 @@ def get_pending_requests_for_caregiver(caregiver_name):
         FROM match_requests
         WHERE caregiver_name = ?
         AND status = 'pending'
+        AND buddy_id IS NULL AND buddy_sender IS NULL
         ORDER BY id ASC
     """, (caregiver_name,))
 
@@ -576,6 +599,7 @@ def get_pending_requests_for_caregiver(caregiver_name):
 
 
 def update_match_request_status(request_id, status):
+    """Legacy demo requests only; identified requests require their recipient."""
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -583,6 +607,7 @@ def update_match_request_status(request_id, status):
         UPDATE match_requests
         SET status = ?
         WHERE id = ?
+          AND buddy_id IS NULL AND buddy_sender IS NULL
     """, (
         status,
         request_id
@@ -590,6 +615,143 @@ def update_match_request_status(request_id, status):
 
     connection.commit()
     connection.close()
+
+
+def save_match_preview(requester, match, user):
+    """Persist the displayed choice and its score, including across restarts."""
+    connection = get_connection()
+    try:
+        with connection:
+            connection.execute("""
+                INSERT OR REPLACE INTO match_previews
+                    (requester, buddy_id, buddy_sender, caregiver_name,
+                     match_percentage, support_type, availability)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (requester, match["buddy_id"], match["sender"], match["name"],
+                  match["percentage"], user.get("support_type"), user.get("availability")))
+            connection.execute("UPDATE users SET state = 'confirm_match' WHERE sender = ?", (requester,))
+    finally:
+        connection.close()
+
+
+def _eligible_buddy(connection, buddy_id, sender):
+    return connection.execute("""
+        SELECT id FROM support_buddy_applications
+        WHERE id = ? AND sender = ? AND status = 'approved'
+          AND submitted_at IS NOT NULL AND consent = 1
+          AND (verification_required = 0 OR verified_at IS NOT NULL)
+    """, (buddy_id, sender)).fetchone() is not None
+
+
+def create_selected_match_request(requester):
+    """Consume one preview atomically. Never select a replacement on confirm."""
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            preview = connection.execute(
+                "SELECT * FROM match_previews WHERE requester = ?", (requester,)
+            ).fetchone()
+            if preview is None:
+                return "missing", None
+            if preview["buddy_sender"] == requester or not _eligible_buddy(
+                connection, preview["buddy_id"], preview["buddy_sender"]
+            ):
+                connection.execute("DELETE FROM match_previews WHERE requester = ?", (requester,))
+                connection.execute("UPDATE users SET state = 'main_menu' WHERE sender = ?", (requester,))
+                return "unavailable", None
+
+            # A retried confirmation or another search must not duplicate a pending request.
+            existing = connection.execute("""
+                SELECT * FROM match_requests
+                WHERE requester = ? AND buddy_id = ? AND buddy_sender = ? AND status = 'pending'
+                ORDER BY id DESC LIMIT 1
+            """, (requester, preview["buddy_id"], preview["buddy_sender"])).fetchone()
+            if existing is None:
+                cursor = connection.execute("""
+                    INSERT INTO match_requests
+                        (requester, caregiver_name, match_percentage, status, buddy_id,
+                         buddy_sender, support_type, availability, created_at)
+                    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (requester, preview["caregiver_name"], preview["match_percentage"],
+                      preview["buddy_id"], preview["buddy_sender"],
+                      preview["support_type"], preview["availability"]))
+                request = connection.execute(
+                    "SELECT * FROM match_requests WHERE id = ?", (cursor.lastrowid,)
+                ).fetchone()
+                outcome = "created"
+            else:
+                request = existing
+                outcome = "existing"
+            connection.execute("DELETE FROM match_previews WHERE requester = ?", (requester,))
+            connection.execute("UPDATE users SET state = 'match_pending' WHERE sender = ?", (requester,))
+            return outcome, dict(request)
+    finally:
+        connection.close()
+
+
+def get_buddy_requests(sender, page=1, page_size=5):
+    """Only the recipient's pending requests; names are never used for routing."""
+    page = max(1, page)
+    page_size = max(1, min(5, page_size))
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute("""
+            SELECT r.* FROM match_requests r
+            JOIN support_buddy_applications b ON b.id = r.buddy_id AND b.sender = r.buddy_sender
+            WHERE r.buddy_sender = ? AND r.status = 'pending'
+            ORDER BY r.id ASC LIMIT ? OFFSET ?
+        """, (sender, page_size + 1, (page - 1) * page_size)).fetchall()
+        return [dict(row) for row in rows[:page_size]], len(rows) > page_size
+    finally:
+        connection.close()
+
+
+def get_buddy_request(sender, request_id):
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute("""
+            SELECT r.* FROM match_requests r
+            JOIN support_buddy_applications b ON b.id = r.buddy_id AND b.sender = r.buddy_sender
+            WHERE r.id = ? AND r.buddy_sender = ?
+        """, (request_id, sender)).fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def respond_to_buddy_request(sender, request_id, decision):
+    """Authorize the recipient and resolve a pending request in one transaction."""
+    if decision not in ("accepted", "declined"):
+        raise ValueError("Choose accepted or declined.")
+    connection = get_connection()
+    connection.row_factory = sqlite3.Row
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("""
+                SELECT r.* FROM match_requests r
+                JOIN support_buddy_applications b ON b.id = r.buddy_id AND b.sender = r.buddy_sender
+                WHERE r.id = ? AND r.buddy_sender = ?
+            """, (request_id, sender)).fetchone()
+            if row is None:
+                return "not_found", None
+            if row["status"] != "pending":
+                return "already_resolved", dict(row)
+            if decision == "accepted" and not _eligible_buddy(connection, row["buddy_id"], sender):
+                return "unavailable", dict(row)
+            connection.execute("""
+                UPDATE match_requests SET status = ?, responded_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND buddy_sender = ? AND status = 'pending'
+            """, (decision, request_id, sender))
+            result = dict(row)
+            result["status"] = decision
+            return "updated", result
+    finally:
+        connection.close()
 
 
 def save_conversation_message(sender, role, message):
@@ -806,5 +968,46 @@ def review_support_buddy_application(application_id, action, notes, actor, versi
                 "INSERT INTO admin_review_events (application_id, action, actor, notes) VALUES (?, ?, ?, ?)",
                 (application_id, action, actor, notes)
             )
+    finally:
+        connection.close()
+
+
+def get_approved_support_buddies():
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        cursor.execute("""
+            SELECT
+                id,
+                sender,
+                display_name,
+                support_types,
+                availability
+            FROM support_buddy_applications
+            WHERE status = 'approved'
+              AND submitted_at IS NOT NULL
+              AND consent = 1
+              AND (
+                  verification_required = 0
+                  OR verified_at IS NOT NULL
+              )
+            ORDER BY id
+        """)
+
+        rows = cursor.fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "sender": row[1],
+                "name": row[2] or "Support Buddy",
+                "support_types": row[3] or "",
+                "availability": row[4] or ""
+            }
+            for row in rows
+        ]
+
     finally:
         connection.close()

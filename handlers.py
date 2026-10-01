@@ -10,7 +10,11 @@ ADMIN_PHONE_NUMBER = os.getenv("ADMIN_PHONE_NUMBER", "")
 ADMIN_PIN = os.getenv("ADMIN_PIN", "")
 
 from database import (
-    create_match_request,
+    create_selected_match_request,
+    save_match_preview,
+    get_buddy_requests,
+    get_buddy_request,
+    respond_to_buddy_request,
     cancel_support_buddy_draft,
     get_support_buddy_application,
     get_support_buddy_draft,
@@ -407,6 +411,88 @@ def handle_registration(sender, text, state):
     return registration_destination(sender, "review" if editing else next_registration_step(draft))
 
 
+def handle_buddy_request_command(sender, text):
+    parts = text.split()
+    if not parts or parts[0] not in ("requests", "request", "accept", "decline"):
+        return None
+    command = parts[0]
+    if command == "requests" and len(parts) == 1:
+        number = 1
+    elif (len(parts) == 2 and parts[1].isascii() and parts[1].isdigit()
+          and len(parts[1]) <= 9 and int(parts[1]) > 0):
+        number = int(parts[1])
+    else:
+        return (
+            "Type 'requests' to see incoming connection requests.\n"
+            "Use the request ID shown: 'request 12', 'accept 12' or 'decline 12'.\n"
+            "For another page, type 'requests 2'."
+        )
+
+    if command == "requests":
+        requests, has_more = get_buddy_requests(sender, page=number)
+        if not requests:
+            return (
+                "No pending connection requests on this page for your account.\n"
+                "Type 'requests' for the first page, or 'menu' for the main menu."
+            )
+        lines = ["Your incoming connection requests (page " + str(number) + "):"]
+        for request in requests:
+            lines.append(
+                "\nRequest #" + str(request["id"]) + "\n"
+                + "Support wanted: " + (request["support_type"] or "Not recorded") + "\n"
+                + "Preferred time: " + (request["availability"] or "Not recorded")
+            )
+        example = str(requests[0]["id"])
+        lines.append("\nUse the request ID: 'request " + example + "', 'accept " + example + "' or 'decline " + example + "'.")
+        if has_more:
+            lines.append("Next page: 'requests " + str(number + 1) + "'.")
+        lines.append("Type 'requests' to refresh or 'menu' for the main menu.")
+        return "\n".join(lines)
+
+    if command == "request":
+        request = get_buddy_request(sender, number)
+        if request is None:
+            return "That request was not found for your account. Type 'requests' to see your requests."
+        reply = (
+            "Connection request #" + str(number) + "\n"
+            + "Status: " + request["status"].capitalize() + "\n"
+            + "Support wanted: " + (request["support_type"] or "Not recorded") + "\n"
+            + "Preferred time: " + (request["availability"] or "Not recorded")
+        )
+        if request["status"] == "pending":
+            reply += "\n\nType 'accept " + str(number) + "' or 'decline " + str(number) + "'."
+        return reply + "\nType 'requests' for your inbox."
+
+    decision = "accepted" if command == "accept" else "declined"
+    outcome, request = respond_to_buddy_request(sender, number, decision)
+    if outcome == "not_found":
+        return "That request was not found for your account. Type 'requests' to see your requests."
+    if outcome == "unavailable":
+        return "Your Support Buddy profile must be approved and verified where required before accepting. Type 'application status' to check it."
+    if outcome == "already_resolved":
+        return "Request #" + str(number) + " was already " + request["status"] + ". Type 'requests' for pending requests."
+    reply = "Request #" + str(number) + " " + decision + ". The caregiver can type 'status' to see your response."
+    if decision == "accepted":
+        reply += "\nAcceptance is recorded. Chat between buddies and contact sharing are not enabled yet."
+    return reply + "\nType 'requests' to see other pending requests."
+
+
+def buddy_unavailable_reply(sender, no_matches=False):
+    update_user(sender, state="buddy_unavailable")
+    message = (
+        "We couldn't find an available buddy for your preferences right now."
+        if no_matches else "This buddy isn't available to connect right now."
+    )
+    return message + """
+
+What would you like to do next?
+
+1. Find another buddy
+2. Talk to CareConnect AI
+3. Return to the main menu
+"""
+
+
 def handle_message(sender, text):
     user = get_user(sender)
 
@@ -417,6 +503,10 @@ def handle_message(sender, text):
     state = user["state"]
 
     text = text.strip().lower()
+
+    buddy_reply = handle_buddy_request_command(sender, text)
+    if buddy_reply is not None:
+        return buddy_reply
 
     if sender == ADMIN_PHONE_NUMBER:
         admin_reply = handle_admin_message(sender, text, state)
@@ -440,8 +530,6 @@ Type 'menu' to return to the main menu.
             return f"""
 Your connection request to {latest_request["caregiver_name"]} is still pending.
 
-Match: {latest_request["match_percentage"]}%
-
 Type 'menu' to return to the main menu.
 """
 
@@ -456,26 +544,27 @@ Great news!
 
 {latest_request["caregiver_name"]} accepted your connection request.
 
-Match: {latest_request["match_percentage"]}%
 Status: Accepted
 
 You are now matched.
+
+Acceptance is recorded. Chat between buddies and contact sharing are not enabled yet.
 
 Type 'menu' to return to the main menu.
 """
 
         elif latest_request["status"] == "declined":
+            return buddy_unavailable_reply(sender)
+
+    if state == "buddy_unavailable":
+        if text in ("1", "2"):
+            # Reuse the existing Find a Buddy and AI entry points below.
             reset_user(sender)
-
-            return f"""
-{latest_request["caregiver_name"]} was unable to accept your connection request.
-
-Status: Declined
-
-You can search for another buddy.
-
-Type 'menu' to return to the main menu.
-"""
+            state = "main_menu"
+        elif text == "3":
+            text = "menu"
+        elif text not in ("hi", "hello", "hey", "start", "menu"):
+            return "Please choose 1, 2 or 3.\n\n1. Find another buddy\n2. Talk to CareConnect AI\n3. Return to the main menu"
 
     if text in ["hi", "hello", "hey", "start", "menu"]:
         reset_user(sender)
@@ -491,6 +580,7 @@ Welcome to RDSS CareConnect
 
 You can also type 'status' to check a match request.
 Type 'application status' to check your Support Buddy application.
+Support Buddies can type 'requests' to view incoming connection requests.
 """
 
     if state.startswith("buddy_registration_"):
@@ -621,24 +711,19 @@ When would you usually prefer to chat?
 
             if len(matches) == 0:
                 reset_user(sender)
-
-                return """
-No caregivers are currently available.
-
-Type 'menu' to return to the main menu.
-"""
+                return buddy_unavailable_reply(sender, no_matches=True)
 
             best_match = matches[0]
 
-            update_user(
-                sender,
-                state="confirm_match"
-            )
+            save_match_preview(sender, best_match, user)
+            preferences_text = "\n".join("- " + item for item in best_match["shared_preferences"])
 
             return f"""
-Best match found:
+A buddy who shares your preferences:
 
-{best_match["name"]} - {best_match["percentage"]}% match
+{best_match["name"]}
+
+{preferences_text}
 
 Would you like to send a connection request?
 
@@ -649,31 +734,23 @@ Would you like to send a connection request?
         return "Please choose 1, 2, 3 or 4."
 
     elif state == "confirm_match":
-        user = get_user(sender)
-        matches = find_matches(user)
-
-        if len(matches) == 0:
-            reset_user(sender)
-
-            return "No matches are currently available. Type 'menu' to restart."
-
-        best_match = matches[0]
-
         if text == "1":
-            create_match_request(
-                requester=sender,
-                caregiver_name=best_match["name"],
-                match_percentage=best_match["percentage"]
-            )
-
-            update_user(
-                sender,
-                state="match_pending"
-            )
+            outcome, request = create_selected_match_request(sender)
+            if outcome == "missing":
+                # A second confirmation may arrive after the first consumed the preview.
+                if get_user(sender)["state"] == "match_pending":
+                    return "Your connection request is already saved. Type 'status' to check it."
+                reset_user(sender)
+                return "Your previous match selection is no longer available. Type 'menu' and choose 1 to search again."
+            if outcome == "unavailable":
+                return buddy_unavailable_reply(sender)
+            if outcome == "existing":
+                return "You already have a pending request to " + request["caregiver_name"] + ". Type 'status' to check your latest request."
 
             return f"""
-Connection request sent to {best_match["name"]}.
+Connection request sent to {request["caregiver_name"]}.
 
+Request ID: {request["id"]}
 Status: Pending
 
 Type 'status' to check whether they have responded.
@@ -707,6 +784,8 @@ Type 'menu' to return to the main menu.
         if latest_request is not None:
             return f"""
 You are currently matched with {latest_request["caregiver_name"]}.
+
+Chat between buddies and contact sharing are not enabled yet.
 
 Type 'menu' to return to the main menu.
 """
