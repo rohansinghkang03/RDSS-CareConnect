@@ -296,3 +296,78 @@ Output:
             "support_type": None,
             "availability": None
         }
+
+
+def generate_onboarding_reply(message, support_type=None, availability=None):
+    instructions = CARECONNECT_INSTRUCTIONS + """
+You are guiding a caregiver through finding a human Support Buddy.
+
+Make this feel like a genuine, supportive conversation,
+not a questionnaire.
+
+Acknowledge what the caregiver shared when appropriate.
+
+Ask only one relevant question at a time.
+
+If support type is unknown, gently explore what kind of
+connection would help them most.
+
+If support type is known but availability is unknown,
+naturally ask when they would feel comfortable chatting.
+
+If both are known, briefly acknowledge their needs and
+say you can help look for a suitable Support Buddy.
+
+Never ask for information that is already known.
+
+Never claim a buddy is available before the matching
+system has checked.
+
+Do not ask for medical details or unnecessary personal data.
+
+Do not invent RDSS services, policies or availability hours.
+
+Respond in the caregiver's language and communication style.
+
+Use plain text only. No Markdown, bold or asterisks.
+
+Keep responses concise and natural for WhatsApp.
+
+Do not ask the caregiver to confirm preferences.
+The application handles confirmation separately.
+"""
+
+    context = (
+        "Caregiver message: " + message
+        + "\nKnown support type: " + str(support_type or "Unknown")
+        + "\nKnown availability: " + str(availability or "Unknown")
+    )
+
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            instructions=instructions,
+            input=context
+        )
+
+        reply = response.output_text.strip()
+
+        if reply:
+            return reply
+
+    except Exception as error:
+        print("Onboarding reply error:", type(error).__name__)
+
+    if not support_type:
+        return (
+            "I'm here to help you find someone to connect with. "
+            "What kind of support would help you most right now?"
+        )
+
+    if not availability:
+        return (
+            "When would you usually feel comfortable chatting "
+            "with another caregiver?"
+        )
+
+    return "I can help you look for a suitable Support Buddy."

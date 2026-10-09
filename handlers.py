@@ -1,7 +1,7 @@
 import hmac
 import os
 
-from chatbot import ask_careconnect
+from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -502,7 +502,8 @@ def handle_message(sender, text):
 
     state = user["state"]
 
-    text = text.strip().lower()
+    original_text = text.strip()
+    text = original_text.lower()
 
     buddy_reply = handle_buddy_request_command(sender, text)
     if buddy_reply is not None:
@@ -590,19 +591,19 @@ Support Buddies can type 'requests' to view incoming connection requests.
         if text == "1":
             update_user(
                 sender,
-                state="buddy_mood"
+                state="ai_onboarding",
+                support_type="",
+                availability=""
             )
 
-            return """
-Let's find you a suitable support buddy.
-
-How are you feeling today?
-
-1. Okay
-2. Stressed
-3. Lonely
-4. Burnt out
-"""
+            return (
+                "Hey! I'm here to help you find another caregiver "
+                "you can connect with.\n\n"
+                "How have things been for you lately? "
+                "You can tell me as much or as little as you like.\n\n"
+                "Feel free to speak in whichever language "
+                "you're most comfortable with."
+            )
 
         elif text == "2":
             update_user(
@@ -640,98 +641,134 @@ Type 'menu' anytime to return to the main menu.
     elif state == "resources_menu":
         return get_resource_reply(text)
 
-    elif state == "buddy_mood":
-        moods = {
-            "1": "Okay",
-            "2": "Stressed",
-            "3": "Lonely",
-            "4": "Burnt out"
-        }
+    elif state == "ai_onboarding":
+        extracted = extract_matching_preferences(original_text)
+        current = get_user(sender)
 
-        if text in moods:
+        support_type = (
+            extracted["support_type"]
+            or current.get("support_type")
+            or ""
+        )
+
+        availability = (
+            extracted["availability"]
+            or current.get("availability")
+            or ""
+        )
+
+        update_user(
+            sender,
+            support_type=support_type,
+            availability=availability
+        )
+
+        reply = generate_onboarding_reply(
+            original_text,
+            support_type=support_type,
+            availability=availability
+        )
+
+        if not support_type or not availability:
+            return reply
+
+        update_user(sender, state="ai_onboarding_confirm")
+
+        return (
+            reply
+            + "\n\nHere's what I understood:\n"
+            + "Support: " + support_type + "\n"
+            + "Preferred time: " + availability + "\n\n"
+            + "Is that right?\n\n"
+            + "1. Yes\n"
+            + "2. Change my preferences"
+        )
+
+    elif state == "ai_onboarding_confirm":
+        if text == "2":
             update_user(
                 sender,
-                state="buddy_support",
-                mood=moods[text]
+                state="ai_onboarding",
+                support_type="",
+                availability=""
             )
 
-            return """
-What kind of support are you looking for?
-
-1. Someone to listen
-2. Advice from another caregiver
-3. Casual conversation
-4. Someone with similar experiences
-"""
-
-        return "Please choose 1, 2, 3 or 4."
-
-    elif state == "buddy_support":
-        support_types = {
-            "1": "Someone to listen",
-            "2": "Advice from another caregiver",
-            "3": "Casual conversation",
-            "4": "Someone with similar experiences"
-        }
-
-        if text in support_types:
-            update_user(
-                sender,
-                state="buddy_availability",
-                support_type=support_types[text]
+            return (
+                "Of course. Tell me what kind of support "
+                "you're looking for and when you'd usually "
+                "feel comfortable chatting."
             )
 
-            return """
-When would you usually prefer to chat?
+        if text != "1":
+            extracted = extract_matching_preferences(original_text)
 
-1. Morning
-2. Afternoon
-3. Evening
-4. Flexible
-"""
+            if extracted["support_type"] or extracted["availability"]:
+                current = get_user(sender)
 
-        return "Please choose 1, 2, 3 or 4."
+                support_type = (
+                    extracted["support_type"]
+                    or current.get("support_type")
+                    or ""
+                )
 
-    elif state == "buddy_availability":
-        availability = {
-            "1": "Morning",
-            "2": "Afternoon",
-            "3": "Evening",
-            "4": "Flexible"
-        }
+                availability = (
+                    extracted["availability"]
+                    or current.get("availability")
+                    or ""
+                )
 
-        if text in availability:
-            update_user(
-                sender,
-                availability=availability[text]
+                update_user(
+                    sender,
+                    support_type=support_type,
+                    availability=availability
+                )
+
+                return (
+                    "Of course, I've updated that.\n\n"
+                    "Support: " + support_type + "\n"
+                    "Preferred time: " + availability + "\n\n"
+                    "Shall I look for a Support Buddy?\n\n"
+                    "1. Yes\n"
+                    "2. Start again"
+                )
+
+            return (
+                "You can type 1 to confirm, 2 to start again, "
+                "or tell me what you'd like to change."
             )
 
-            user = get_user(sender)
-            matches = find_matches(user)
+        user = get_user(sender)
 
-            if len(matches) == 0:
-                reset_user(sender)
-                return buddy_unavailable_reply(sender, no_matches=True)
+        if not user.get("support_type") or not user.get("availability"):
+            update_user(sender, state="ai_onboarding")
 
-            best_match = matches[0]
+            return (
+                "I still need a little more information. "
+                "What kind of support would help you most?"
+            )
 
-            save_match_preview(sender, best_match, user)
-            preferences_text = "\n".join("- " + item for item in best_match["shared_preferences"])
+        matches = find_matches(user)
 
-            return f"""
-A buddy who shares your preferences:
+        if not matches:
+            reset_user(sender)
+            return buddy_unavailable_reply(sender, no_matches=True)
 
-{best_match["name"]}
+        best_match = matches[0]
 
-{preferences_text}
+        save_match_preview(sender, best_match, user)
 
-Would you like to send a connection request?
+        preferences_text = "\n".join(
+            "- " + item for item in best_match["shared_preferences"]
+        )
 
-1. Yes
-2. No
-"""
-
-        return "Please choose 1, 2, 3 or 4."
+        return (
+            "I found a Support Buddy who shares your preferences:\n\n"
+            + best_match["name"] + "\n\n"
+            + preferences_text + "\n\n"
+            + "Would you like to send a connection request?\n\n"
+            + "1. Yes\n"
+            + "2. No"
+        )
 
     elif state == "confirm_match":
         if text == "1":
