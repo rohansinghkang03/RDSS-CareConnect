@@ -371,3 +371,67 @@ The application handles confirmation separately.
         )
 
     return "I can help you look for a suitable Support Buddy."
+
+
+def interpret_confirmation(message):
+    import json
+
+    instructions = """
+Interpret a caregiver's response to a question asking
+whether their matching preferences are correct.
+
+Understand any language you can interpret, including
+informal speech, slang, transliteration and mixed languages.
+
+Return ONLY a JSON object with one field:
+
+{"intent": "confirm"}
+
+Allowed intent values:
+- confirm
+- change
+- unclear
+
+CONFIRM:
+The caregiver clearly agrees with the preferences.
+
+Examples:
+"yes", "yeah", "yup", "sounds good", "can lah",
+"可以", "对", "好", "boleh", "ya", "betul",
+"ஆம்", "சரி"
+
+CHANGE:
+The caregiver wants to correct or change something.
+
+Examples:
+"Actually mornings are better"
+"No, I want advice instead"
+"Can change the timing?"
+
+UNCLEAR:
+The message does not clearly confirm or request a change.
+
+Rules:
+- Do not assume agreement.
+- A simple "no" means change.
+- If unsure, return unclear.
+- Return no explanations or additional fields.
+"""
+
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            instructions=instructions,
+            input=message
+        )
+
+        result = json.loads(response.output_text)
+        intent = result.get("intent")
+
+        if intent in ("confirm", "change", "unclear"):
+            return intent
+
+    except Exception as error:
+        print("Confirmation interpretation error:", type(error).__name__)
+
+    return "unclear"

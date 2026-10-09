@@ -1,7 +1,7 @@
 import hmac
 import os
 
-from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply
+from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply, interpret_confirmation
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -698,6 +698,29 @@ Type 'menu' anytime to return to the main menu.
                 "you're looking for and when you'd usually "
                 "feel comfortable chatting."
             )
+
+        if text not in ("1", "2"):
+            intent = interpret_confirmation(original_text)
+
+            if intent == "confirm":
+                text = "1"
+
+            elif intent == "change":
+                extracted = extract_matching_preferences(original_text)
+
+                if not extracted["support_type"] and not extracted["availability"]:
+                    update_user(sender, state="ai_onboarding")
+                    return (
+                        "Of course. What would you like to change "
+                        "about your preferences?"
+                    )
+
+            else:
+                return (
+                    "Just checking, are these preferences correct? "
+                    "You can say yes, tell me what to change, "
+                    "or type 2 to start again."
+                )
 
         if text != "1":
             extracted = extract_matching_preferences(original_text)
