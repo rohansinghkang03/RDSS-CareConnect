@@ -9,6 +9,55 @@ from database import (
     save_conversation_message
 )
 
+
+# Temporary language context for caregiver matching.
+# Only short language samples are retained in memory.
+# Nothing is written to PostgreSQL.
+_matching_language_cache = {}
+
+def remember_matching_language(sender, message):
+    message = message.strip()
+
+    if not message or message.isdigit():
+        return
+
+    # Detect language without saving the original caregiver message.
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Identify the language used in the message. "
+                        "Return ONLY a short language description, "
+                        "such as English, Mandarin Chinese, Malay, "
+                        "Tamil, or English with Singlish expressions. "
+                        "Do not repeat or summarise the message. "
+                        "Do not include personal information."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ]
+        )
+
+        language = response.choices[0].message.content.strip()
+
+        if language and len(language) <= 80:
+            _matching_language_cache[sender] = language
+
+    except Exception as error:
+        print("Language detection error:", type(error).__name__)
+
+
+
+def get_matching_language_example(sender, fallback=""):
+    return _matching_language_cache.get(sender, fallback)
+
+
 load_dotenv()
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
@@ -652,51 +701,5 @@ def safe_adapt_message(message, caregiver_message, required_text=None):
     return adapted
 
 
-def remember_matching_language(sender, message):
-    """
-    Remember meaningful caregiver messages for language continuity.
-    Numeric menu selections are not treated as language examples.
-    """
-    message = message.strip()
-
-    if not message:
-        return
-
-    if message.isdigit():
-        return
-
-    save_conversation_message(
-        sender,
-        "user",
-        message
-    )
 
 
-def get_matching_language_example(sender, fallback=""):
-    """
-    Retrieve the latest meaningful caregiver message.
-    """
-    try:
-        history = get_recent_conversation(sender, limit=20)
-
-        for item in reversed(history):
-            if not isinstance(item, dict):
-                continue
-
-            if item.get("role") != "user":
-                continue
-
-            content = item.get("content", "")
-
-            if not isinstance(content, str):
-                continue
-
-            content = content.strip()
-
-            if content and not content.isdigit():
-                return content
-
-    except Exception as error:
-        print("Language history error:", type(error).__name__)
-
-    return fallback
