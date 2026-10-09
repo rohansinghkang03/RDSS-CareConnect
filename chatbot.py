@@ -6,22 +6,31 @@ from openai import OpenAI
 
 from database import (
     get_recent_conversation,
-    save_conversation_message
+    save_conversation_message,
+    get_language_preference,
+    set_language_preference
 )
 
 
-# Temporary language context for caregiver matching.
-# Only short language samples are retained in memory.
-# Nothing is written to PostgreSQL.
+# Temporary fallback is used only when PostgreSQL is unavailable.
+# No caregiver message text is retained in the cache.
 _matching_language_cache = {}
+
+# Only known language labels can be persisted. This prevents an AI response
+# containing caregiver details from being saved as a "language".
+_ALLOWED_LANGUAGES = {
+    "English", "English with Singlish expressions", "Mandarin Chinese",
+    "Simplified Chinese", "Traditional Chinese", "Malay", "Tamil",
+    "Hindi", "Punjabi", "Indonesian", "Bengali", "Tagalog",
+    "Arabic", "Japanese", "Korean", "French", "Spanish"
+}
+
 
 def remember_matching_language(sender, message):
     message = message.strip()
-
     if not message or message.isdigit():
         return
 
-    # Detect language without saving the original caregiver message.
     try:
         response = client.chat.completions.create(
             model=MODEL,
@@ -29,32 +38,36 @@ def remember_matching_language(sender, message):
                 {
                     "role": "system",
                     "content": (
-                        "Identify the language used in the message. "
-                        "Return ONLY a short language description, "
-                        "such as English, Mandarin Chinese, Malay, "
-                        "Tamil, or English with Singlish expressions. "
-                        "Do not repeat or summarise the message. "
-                        "Do not include personal information."
+                        "Identify the caregiver's preferred language. "
+                        "Return exactly ONE label from this list: "
+                        + ", ".join(sorted(_ALLOWED_LANGUAGES))
+                        + ". Do not repeat any caregiver information. "
+                        "If uncertain, return English."
                     )
                 },
-                {
-                    "role": "user",
-                    "content": message
-                }
+                {"role": "user", "content": message}
             ]
         )
-
-        language = response.choices[0].message.content.strip()
-
-        if language and len(language) <= 80:
-            _matching_language_cache[sender] = language
-
+        language = (response.choices[0].message.content or "").strip()
+        if language not in _ALLOWED_LANGUAGES:
+            return
+        _matching_language_cache[sender] = language
+        try:
+            set_language_preference(sender, language)
+        except Exception as error:
+            print("Language preference save error:", type(error).__name__)
     except Exception as error:
         print("Language detection error:", type(error).__name__)
 
 
-
 def get_matching_language_example(sender, fallback=""):
+    try:
+        language = get_language_preference(sender)
+        if language in _ALLOWED_LANGUAGES:
+            _matching_language_cache[sender] = language
+            return language
+    except Exception as error:
+        print("Language preference read error:", type(error).__name__)
     return _matching_language_cache.get(sender, fallback)
 
 

@@ -39,7 +39,8 @@ def create_tables():
                 full_name TEXT,
                 mood TEXT,
                 support_type TEXT,
-                availability TEXT
+                availability TEXT,
+                language_preference TEXT
             )
         """)
         cursor.execute("""

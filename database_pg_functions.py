@@ -155,7 +155,8 @@ def get_user(sender):
     cursor = connection.cursor()
 
     cursor.execute("""
-        SELECT sender, state, full_name, mood, support_type, availability
+        SELECT sender, state, full_name, mood, support_type, availability,
+               language_preference
         FROM users
         WHERE sender = ?
     """, (sender,))
@@ -172,8 +173,40 @@ def get_user(sender):
         "full_name": row[2],
         "mood": row[3],
         "support_type": row[4],
-        "availability": row[5]
+        "availability": row[5],
+        "language_preference": row[6]
     }
+
+
+def get_language_preference(sender):
+    """Read a short language label without loading conversation history."""
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            "SELECT language_preference FROM users WHERE sender = ?",
+            (sender,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        connection.close()
+
+
+def set_language_preference(sender, language):
+    """Store only a validated language label, never caregiver message text."""
+    if not isinstance(language, str) or not language or len(language) > 80:
+        raise ValueError("Invalid language preference")
+    connection = get_connection()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO users (sender, state, language_preference) "
+                "VALUES (?, 'main_menu', ?) "
+                "ON CONFLICT (sender) DO UPDATE "
+                "SET language_preference = EXCLUDED.language_preference",
+                (sender, language)
+            )
+    finally:
+        connection.close()
 
 
 def create_user(sender):
