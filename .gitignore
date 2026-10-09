@@ -28,3 +28,7 @@ __pycache__/
 !.env.example
 private_db_backups/
 *.dump
+
+# Local development backups
+*_before_*.py
+database_postgres_ready.py
