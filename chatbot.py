@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -16,19 +17,34 @@ from database import (
 # No caregiver message text is retained in the cache.
 _matching_language_cache = {}
 
-# Only known language labels can be persisted. This prevents an AI response
-# containing caregiver details from being saved as a "language".
-_ALLOWED_LANGUAGES = {
-    "English", "English with Singlish expressions", "Mandarin Chinese",
-    "Simplified Chinese", "Traditional Chinese", "Malay", "Tamil",
-    "Hindi", "Punjabi", "Indonesian", "Bengali", "Tagalog",
-    "Arabic", "Japanese", "Korean", "French", "Spanish"
+# Store only a short, validated language name, never the caregiver's message.
+# This is deliberately not a fixed language whitelist.
+_LANGUAGE_LABEL = re.compile(r"[A-Za-z][A-Za-z -]{0,59}\Z")
+
+# Brief confirmations are not reliable evidence of a language change.
+_SHORT_REPLIES = {
+    "yes", "no", "ok", "okay", "sure", "thanks", "thank you", "hi",
+    "hello", "bye", "yup", "yeah", "y", "n", "menu", "next",
+    "confirm", "cancel", "exit", "back", "continue", "done",
+    "好", "对", "是", "不是", "可以", "谢谢", "好的", "嗯",
+    "ya", "tak", "boleh", "terima kasih", "சரி", "ஆம்", "இல்லை"
 }
 
 
+def _valid_language_label(value):
+    if not isinstance(value, str):
+        return False
+    if not _LANGUAGE_LABEL.fullmatch(value):
+        return False
+    # Language labels cannot be whole sentences or caregiver messages.
+    return len(value.split()) <= 5
+
+
 def remember_matching_language(sender, message):
+    if not isinstance(message, str):
+        return
     message = message.strip()
-    if not message or message.isdigit():
+    if not message or message.isdigit() or message.casefold() in _SHORT_REPLIES:
         return
 
     try:
@@ -38,18 +54,33 @@ def remember_matching_language(sender, message):
                 {
                     "role": "system",
                     "content": (
-                        "Identify the caregiver's preferred language. "
-                        "Return exactly ONE label from this list: "
-                        + ", ".join(sorted(_ALLOWED_LANGUAGES))
-                        + ". Do not repeat any caregiver information. "
-                        "If uncertain, return English."
+                        "Identify the language the caregiver uses or explicitly asks "
+                        "you to use. You may identify ANY language, not a fixed list. "
+                        "Reply with exactly one JSON object containing two fields: "
+                        "language (an English-language name of the language or "
+                        "communication variety, such as Vietnamese, Burmese, "
+                        "Punjabi, Mandarin Chinese, or English with Singlish "
+                        "expressions) and confident (true or false). "
+                        "Use confident=false for ambiguous, very short, "
+                        "language-neutral or mixed-language messages without "
+                        "a clear preference. Respect explicit language-switch "
+                        "requests even when written in English. "
+                        "Do not infer English merely because you are uncertain. "
+                        "The language value must contain only Latin letters, "
+                        "spaces or hyphens, at most five words and 60 characters. "
+                        "Never include caregiver details, quotations, personal "
+                        "information, or message text in the language field. "
+                        "No Markdown, explanations or extra keys."
                     )
                 },
                 {"role": "user", "content": message}
             ]
         )
-        language = (response.choices[0].message.content or "").strip()
-        if language not in _ALLOWED_LANGUAGES:
+        result = json.loads((response.choices[0].message.content or "").strip())
+        if not isinstance(result, dict) or result.get("confident") is not True:
+            return
+        language = result.get("language")
+        if not _valid_language_label(language):
             return
         _matching_language_cache[sender] = language
         try:
@@ -63,7 +94,7 @@ def remember_matching_language(sender, message):
 def get_matching_language_example(sender, fallback=""):
     try:
         language = get_language_preference(sender)
-        if language in _ALLOWED_LANGUAGES:
+        if _valid_language_label(language):
             _matching_language_cache[sender] = language
             return language
     except Exception as error:
