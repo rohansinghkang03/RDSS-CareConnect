@@ -18,7 +18,7 @@ from database import (
 
 app = Flask(__name__)
 
-VERIFY_TOKEN = "rdss-careconnect-verify"
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
 create_tables()
 
