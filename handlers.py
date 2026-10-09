@@ -1,7 +1,7 @@
 import hmac
 import os
 
-from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply, interpret_confirmation
+from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply, interpret_confirmation, safe_adapt_message, remember_matching_language, get_matching_language_example
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -479,18 +479,40 @@ def handle_buddy_request_command(sender, text):
 
 def buddy_unavailable_reply(sender, no_matches=False):
     update_user(sender, state="buddy_unavailable")
+
+    if no_matches:
+        introduction = (
+            "I couldn't find a Support Buddy who matches "
+            "your preferences right now."
+        )
+    else:
+        introduction = (
+            "Unfortunately, this Support Buddy isn't "
+            "available to connect right now."
+        )
+
     message = (
-        "We couldn't find an available buddy for your preferences right now."
-        if no_matches else "This buddy isn't available to connect right now."
+        introduction
+        + "\n\n"
+        + "I understand this might be disappointing, "
+        + "especially when you're looking for someone to talk to. "
+        + "You're welcome to try again or talk with CareConnect AI "
+        + "in the meantime.\n\n"
+        + "What would you like to do next?\n\n"
+        + "1. Find another buddy\n"
+        + "2. Talk to CareConnect AI\n"
+        + "3. Return to the main menu"
     )
-    return message + """
 
-What would you like to do next?
+    language_example = get_matching_language_example(sender)
 
-1. Find another buddy
-2. Talk to CareConnect AI
-3. Return to the main menu
-"""
+    if language_example:
+        return safe_adapt_message(
+            message,
+            language_example
+        )
+
+    return message
 
 
 def handle_message(sender, text):
@@ -642,6 +664,7 @@ Type 'menu' anytime to return to the main menu.
         return get_resource_reply(text)
 
     elif state == "ai_onboarding":
+        remember_matching_language(sender, original_text)
         extracted = extract_matching_preferences(original_text)
         current = get_user(sender)
 
@@ -674,15 +697,24 @@ Type 'menu' anytime to return to the main menu.
 
         update_user(sender, state="ai_onboarding_confirm")
 
-        return (
-            reply
-            + "\n\nHere's what I understood:\n"
+        confirmation_message = (
+            "Here's what I understood:\n"
             + "Support: " + support_type + "\n"
             + "Preferred time: " + availability + "\n\n"
             + "Is that right?\n\n"
             + "1. Yes\n"
             + "2. Change my preferences"
         )
+
+        return (
+            reply
+            + "\n\n"
+            + safe_adapt_message(
+                confirmation_message,
+                original_text
+            )
+        )
+
 
     elif state == "ai_onboarding_confirm":
         if text == "2":
@@ -773,7 +805,6 @@ Type 'menu' anytime to return to the main menu.
         matches = find_matches(user)
 
         if not matches:
-            reset_user(sender)
             return buddy_unavailable_reply(sender, no_matches=True)
 
         best_match = matches[0]
@@ -784,13 +815,24 @@ Type 'menu' anytime to return to the main menu.
             "- " + item for item in best_match["shared_preferences"]
         )
 
-        return (
+        match_message = (
             "I found a Support Buddy who shares your preferences:\n\n"
             + best_match["name"] + "\n\n"
             + preferences_text + "\n\n"
             + "Would you like to send a connection request?\n\n"
             + "1. Yes\n"
             + "2. No"
+        )
+
+        language_example = get_matching_language_example(
+            sender,
+            fallback=original_text
+        )
+
+        return safe_adapt_message(
+            match_message,
+            language_example,
+            required_text=best_match["name"]
         )
 
     elif state == "confirm_match":
