@@ -19,3 +19,5 @@ __pycache__/
 
 # Logs
 *.log
+.venv_old/
+
