@@ -21,3 +21,10 @@ __pycache__/
 *.log
 .venv_old/
 
+
+# Private credentials and caregiver data
+.env
+.env.*
+!.env.example
+private_db_backups/
+*.dump
