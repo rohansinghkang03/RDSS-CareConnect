@@ -26,6 +26,7 @@ from database import (
     create_user,
     get_latest_match_request,
     get_user,
+    set_language_preference,
     reset_user,
     start_support_buddy_draft,
     update_support_buddy_draft,
@@ -101,7 +102,7 @@ def registration_review(sender):
     draft = get_support_buddy_draft(sender)
     if not draft:
         reset_user(sender)
-        return "No registration draft found. Type 'menu' and choose 4 to begin."
+        return caregiver_message(sender, "No registration draft found. Type 'menu' and choose 4 to begin.")
     lines = ["Review your Support Buddy application", ""]
     for _, field, label in REGISTRATION_FIELDS:
         value = draft.get(field)
@@ -122,25 +123,61 @@ def registration_review(sender):
 
 def registration_destination(sender, step):
     update_user(sender, state="buddy_registration_" + step)
-    return registration_review(sender) if step == "review" else registration_prompt(step)
+    message = (
+        registration_review(sender)
+        if step == "review"
+        else registration_prompt(step)
+    )
+    return caregiver_message(sender, message)
 
 
 def application_status_reply(sender):
     application = get_support_buddy_application(sender)
+
     if application:
         status = application["status"]
-        label = {"pending": "Pending RDSS review", "approved": "Approved",
-                 "rejected": "Not approved", "declined": "Not approved"}.get(status, status)
-        reply = "Support Buddy application\n\nStatus: " + label
+
+        label = {
+            "pending": "Pending RDSS review",
+            "approved": "Approved",
+            "rejected": "Not approved",
+            "declined": "Not approved"
+        }.get(status, status)
+
+        reply = "Your Support Buddy Application 💜\n\nStatus: " + label
         reply += "\nSubmitted: " + application["submitted_at"] + " UTC"
+
         if application["verification_required"]:
-            reply += "\nExtra verification: " + ("Complete" if application.get("verified_at") else "Required for non-RDSS members")
+            reply += "\nExtra verification: " + (
+                "Complete"
+                if application.get("verified_at")
+                else "Required for non-RDSS members"
+            )
+
         if get_support_buddy_draft(sender):
-            reply += "\nYou also have an unfinished draft. Choose 4 from the menu to resume."
-        return reply + "\n\nType 'menu' to return to the main menu."
+            reply += (
+                "\n\nYou also have an unfinished draft. "
+                "Type 'menu' and choose 4 to resume."
+            )
+
+        return caregiver_message(
+            sender,
+            reply + "\n\nType 'menu' to return to the main menu.",
+            required_text=application["submitted_at"]
+        )
+
     if get_support_buddy_draft(sender):
-        return "Your Support Buddy application is a draft and has not been submitted.\nType 'menu', then choose 4 to resume."
-    return "You have not submitted a Support Buddy application. Type 'menu', then choose 4 to begin."
+        return caregiver_message(sender, (
+            "Your Support Buddy application is still a draft. 💜\n\n"
+            "It hasn't been submitted to RDSS yet.\n\n"
+            "Type 'menu', then choose 4 to continue."
+        ))
+
+    return caregiver_message(sender, (
+        "You haven't submitted a Support Buddy application yet. 💜\n\n"
+        "If you'd like to support another caregiver, "
+        "type 'menu' and choose 4 to begin."
+    ))
 
 
 def begin_registration(sender):
@@ -149,7 +186,11 @@ def begin_registration(sender):
         return application_status_reply(sender)
     start_support_buddy_draft(sender)
     draft = get_support_buddy_draft(sender)
-    return "Become a CareConnect Support Buddy\n\n" + registration_destination(sender, next_registration_step(draft))
+    return (
+        caregiver_message(sender, "Become a Support Buddy 💜")
+        + "\n\n"
+        + registration_destination(sender, next_registration_step(draft))
+    )
 
 
 def admin_menu_reply():
@@ -515,6 +556,226 @@ def buddy_unavailable_reply(sender, no_matches=False):
     return message
 
 
+
+LANGUAGE_CHOICES = {
+    "1": "English",
+    "2": "Mandarin Chinese",
+    "3": "Tamil",
+    "4": "Malay"
+}
+
+LANGUAGE_SELECTION_MESSAGE = """
+Welcome to RDSS CareConnect! 💜
+
+I'm CareConnect, your support companion from
+Rare Disorders Society Singapore (RDSS).
+
+I'm here to help you connect with other caregivers,
+find helpful resources, or simply have someone to talk to.
+
+Before we begin, which language would you prefer?
+
+1. English
+2. 中文
+3. தமிழ்
+4. Bahasa Melayu
+
+You can also type another language, such as Punjabi or Vietnamese.
+
+You can change your language anytime by typing 'language'.
+"""
+
+MAIN_MENU_MESSAGE = """
+How can I support you today? 💜
+
+1. 🤝 Find a Support Buddy
+2. 💬 Talk to CareConnect AI
+3. 📚 Explore Resources
+4. 💜 Become a Support Buddy
+5. 📞 Contact RDSS
+
+You can select a number or simply tell me what you're looking for.
+
+Type 'menu' anytime to return here.
+"""
+
+
+
+def caregiver_message(sender, message, required_text=None):
+    """
+    Adapt a fixed CareConnect system message to the caregiver's
+    preferred language while preserving important information.
+
+    English messages are returned without an OpenAI call.
+    Translation failures fall back to the original message.
+    """
+    language = get_matching_language_example(sender)
+
+    if not language or language.strip().lower() == "english":
+        return message
+
+    return safe_adapt_message(
+        message,
+        language,
+        required_text=required_text
+    )
+
+
+
+def show_careconnect_menu(sender):
+    language = get_matching_language_example(sender)
+
+    if not language or language.lower() == "english":
+        return MAIN_MENU_MESSAGE
+
+    return safe_adapt_message(
+        MAIN_MENU_MESSAGE,
+        language
+    )
+
+
+def select_careconnect_language(sender, answer):
+    answer = answer.strip()
+    lowered = answer.lower()
+
+    if lowered in ("language", "languages", "back", "hi", "hello", "hey", "start"):
+        return LANGUAGE_SELECTION_MESSAGE
+
+    if lowered == "menu":
+        language = get_matching_language_example(sender)
+
+        if not language:
+            return LANGUAGE_SELECTION_MESSAGE
+
+        update_user(sender, state="main_menu")
+        return show_careconnect_menu(sender)
+
+    language = LANGUAGE_CHOICES.get(answer)
+
+    if language is None:
+        known_languages = {
+            "english": "English",
+            "chinese": "Mandarin Chinese",
+            "mandarin": "Mandarin Chinese",
+            "中文": "Mandarin Chinese",
+            "华语": "Mandarin Chinese",
+            "tamil": "Tamil",
+            "தமிழ்": "Tamil",
+            "malay": "Malay",
+            "bahasa melayu": "Malay",
+            "punjabi": "Punjabi",
+            "vietnamese": "Vietnamese",
+            "burmese": "Burmese",
+            "hindi": "Hindi"
+        }
+
+        language = known_languages.get(lowered)
+
+    if language is None and 0 < len(answer) <= 80:
+        import re
+        from chatbot import client, MODEL
+
+        try:
+            response = client.responses.create(
+                model=MODEL,
+                instructions=(
+                    "You validate language selections for a caregiver "
+                    "support chatbot. The user has been asked which "
+                    "language they prefer. Accept a language name, "
+                    "a language written in its own script, or an "
+                    "explicit request to communicate in a language. "
+                    "Reject ordinary conversation, greetings, "
+                    "requests for help, and ambiguous messages. "
+                    "Reply with ONLY the standard English name "
+                    "of the requested language, or INVALID. "
+                    "Never add explanations."
+                ),
+                input=answer
+            )
+
+            detected = response.output_text.strip()
+
+            if (
+                detected != "INVALID"
+                and re.fullmatch(r"[A-Za-z][A-Za-z -]{0,59}", detected)
+                and len(detected.split()) <= 5
+            ):
+                language = detected
+
+        except Exception as error:
+            print("Language selection error:", type(error).__name__)
+
+    if language is None:
+        return (
+            "I couldn't identify that language. "
+            "Please choose 1, 2, 3 or 4, "
+            "or type the name of your preferred language.\\n\\n"
+            + LANGUAGE_SELECTION_MESSAGE
+        )
+
+    set_language_preference(sender, language)
+    update_user(sender, state="main_menu")
+
+    return show_careconnect_menu(sender)
+
+
+
+def interpret_main_menu_intent(message):
+    """Return a menu number, CLARIFY, or UNKNOWN."""
+    import re
+    from chatbot import client, MODEL
+
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            instructions=(
+                "Classify a caregiver's message for the RDSS CareConnect "
+                "WhatsApp main menu. Return exactly ONE label: "
+                "1, 2, 3, 4, 5, CLARIFY, or UNKNOWN. "
+                "1 = explicitly wants to connect with another caregiver "
+                "or find a Support Buddy. "
+                "2 = explicitly wants to talk to CareConnect AI. "
+                "3 = requests information, resources, or assistance "
+                "such as financial support. "
+                "4 = wants to volunteer or register as a Support Buddy. "
+                "5 = wants to contact RDSS staff directly. "
+                "CLARIFY = expresses loneliness, distress, uncertainty, "
+                "or a general desire to talk without clearly choosing "
+                "AI or peer support. "
+                "UNKNOWN = unrelated or impossible to determine. "
+                "Never infer a specific service from distress alone. "
+                "Do not provide advice or explanations."
+            ),
+            input=message
+        )
+
+        label = response.output_text.strip().upper()
+
+        if re.fullmatch(r"[1-5]|CLARIFY|UNKNOWN", label):
+            return label
+
+    except Exception as error:
+        print("Main menu intent error:", type(error).__name__)
+
+    return "UNKNOWN"
+
+
+def main_menu_clarification(sender):
+    message = (
+        "I'm here to help. 💙\\n\\n"
+        "Would you prefer to:\\n"
+        "1. Connect with another caregiver\\n"
+        "2. Talk to CareConnect AI\\n\\n"
+        "You can also tell me a little more about what you need."
+    )
+
+    language = get_matching_language_example(sender)
+
+    if language and language.lower() != "english":
+        return safe_adapt_message(message, language)
+
+    return message
+
 def handle_message(sender, text):
     user = get_user(sender)
 
@@ -543,18 +804,22 @@ def handle_message(sender, text):
         latest_request = get_latest_match_request(sender)
 
         if latest_request is None:
-            return """
-You do not have any match requests yet.
-
-Type 'menu' to return to the main menu.
-"""
+            return caregiver_message(
+                    sender,
+                    "You do not have any match requests yet.\n\nType 'menu' to return to the main menu.",
+                    required_text="'menu'"
+                )
 
         if latest_request["status"] == "pending":
-            return f"""
-Your connection request to {latest_request["caregiver_name"]} is still pending.
-
-Type 'menu' to return to the main menu.
-"""
+            return (
+                    caregiver_message(sender, "Your connection request to ")
+                    + latest_request["caregiver_name"]
+                    + caregiver_message(
+                        sender,
+                        " is still pending.\n\nType 'menu' to return to the main menu.",
+                        required_text="'menu'"
+                    )
+                )
 
         elif latest_request["status"] == "accepted":
             update_user(
@@ -562,19 +827,21 @@ Type 'menu' to return to the main menu.
                 state="matched"
             )
 
-            return f"""
-Great news!
-
-{latest_request["caregiver_name"]} accepted your connection request.
-
-Status: Accepted
-
-You are now matched.
-
-Acceptance is recorded. Chat between buddies and contact sharing are not enabled yet.
-
-Type 'menu' to return to the main menu.
-"""
+            return (
+                    caregiver_message(sender, "Great news! 💜")
+                    + "\n\n"
+                    + latest_request["caregiver_name"]
+                    + caregiver_message(sender, " accepted your connection request.")
+                    + "\n\n"
+                    + caregiver_message(
+                        sender,
+                        "Status: Accepted\n\nYou are now matched.\n\n"
+                        "Acceptance is recorded. Chat between buddies and contact sharing "
+                        "are not enabled yet.\n\n"
+                        "Type 'menu' to return to the main menu.",
+                        required_text="'menu'"
+                    )
+                )
 
         elif latest_request["status"] == "declined":
             return buddy_unavailable_reply(sender)
@@ -587,29 +854,60 @@ Type 'menu' to return to the main menu.
         elif text == "3":
             text = "menu"
         elif text not in ("hi", "hello", "hey", "start", "menu"):
-            return "Please choose 1, 2 or 3.\n\n1. Find another buddy\n2. Talk to CareConnect AI\n3. Return to the main menu"
+            return caregiver_message(
+                    sender,
+                    "Please choose 1, 2 or 3.\n\n"
+                    "1. Find another buddy\n"
+                    "2. Talk to CareConnect AI\n"
+                    "3. Return to the main menu"
+                )
+
+    if text == "language":
+        update_user(sender, state="language_selection")
+        return LANGUAGE_SELECTION_MESSAGE
+
+    if state == "language_selection":
+        return select_careconnect_language(sender, original_text)
 
     if text in ["hi", "hello", "hey", "start", "menu"]:
         reset_user(sender)
 
-        return """
-Welcome to RDSS CareConnect
+        if not get_matching_language_example(sender):
+            update_user(sender, state="language_selection")
+            return LANGUAGE_SELECTION_MESSAGE
 
-1. Find a Buddy
-2. Talk to CareConnect AI
-3. Resources
-4. Become a Support Buddy
-5. Contact RDSS
-
-You can also type 'status' to check a match request.
-Type 'application status' to check your Support Buddy application.
-Support Buddies can type 'requests' to view incoming connection requests.
-"""
+        return show_careconnect_menu(sender)
 
     if state.startswith("buddy_registration_"):
         return handle_registration(sender, text, state)
 
     if state == "main_menu":
+        if not get_matching_language_example(sender):
+            update_user(sender, state="language_selection")
+            return LANGUAGE_SELECTION_MESSAGE
+
+        if text not in ("1", "2", "3", "4", "5"):
+            intent = interpret_main_menu_intent(original_text)
+
+            if intent == "CLARIFY":
+                return main_menu_clarification(sender)
+
+            if intent in ("1", "2", "3", "4", "5"):
+                text = intent
+
+            else:
+                language = get_matching_language_example(sender)
+                message = (
+                    "I'm not quite sure what you're looking for. "
+                    "You can choose an option from 1 to 5, "
+                    "or tell me how I can help."
+                )
+
+                if language and language.lower() != "english":
+                    return safe_adapt_message(message, language)
+
+                return message
+
         if text == "1":
             update_user(
                 sender,
@@ -618,14 +916,23 @@ Support Buddies can type 'requests' to view incoming connection requests.
                 availability=""
             )
 
-            return (
-                "Hey! I'm here to help you find another caregiver "
-                "you can connect with.\n\n"
-                "How have things been for you lately? "
-                "You can tell me as much or as little as you like.\n\n"
-                "Feel free to speak in whichever language "
-                "you're most comfortable with."
+            message = (
+                "Let's find someone you can connect with. 💜\\n\\n"
+                "Everyone's caregiving journey is different, and "
+                "sometimes it helps to speak with someone who understands.\\n\\n"
+                "I'd like to learn a little about you so I can help "
+                "find a suitable Support Buddy.\\n\\n"
+                "How have things been for you lately?\\n\\n"
+                "Feel free to share as much or as little as "
+                "you're comfortable with."
             )
+
+            language = get_matching_language_example(sender)
+
+            if language and language.lower() != "english":
+                return safe_adapt_message(message, language)
+
+            return message
 
         elif text == "2":
             update_user(
@@ -633,13 +940,24 @@ Support Buddies can type 'requests' to view incoming connection requests.
                 state="ai_chat"
             )
 
-            return """
-CareConnect AI is here to listen.
+            message = (
+                "You're chatting with CareConnect AI. 💜\\n\\n"
+                "I'm here to listen, help you work through your thoughts, "
+                "or explore possible next steps.\\n\\n"
+                "You can talk about your caregiving experiences, "
+                "share what's on your mind, or ask for practical suggestions.\\n\\n"
+                "I'm an AI companion, not a human counsellor, "
+                "but I'll do my best to support you.\\n\\n"
+                "What's on your mind today?\\n\\n"
+                "Type 'menu' anytime to return to the main menu."
+            )
 
-You can talk to me about how you're feeling, what you're going through, or anything that's on your mind.
+            language = get_matching_language_example(sender)
 
-Type 'menu' anytime to return to the main menu.
-"""
+            if language and language.lower() != "english":
+                return safe_adapt_message(message, language)
+
+            return message
 
         elif text == "3":
             update_user(
@@ -647,21 +965,28 @@ Type 'menu' anytime to return to the main menu.
                 state="resources_menu"
             )
 
-            return get_resources_menu()
+            return caregiver_message(sender, get_resources_menu())
 
         elif text == "4":
             return begin_registration(sender)
 
         elif text == "5":
-            return "RDSS contact information will be added here."
+            return caregiver_message(
+                    sender,
+                    "RDSS contact information will be added here."
+                )
 
-        return "Please type 1, 2, 3, 4 or 5. Type 'menu' to restart."
+        return caregiver_message(
+                sender,
+                "Please type 1, 2, 3, 4 or 5. Type 'menu' to restart.",
+                required_text="'menu'"
+            )
 
     elif state == "ai_chat":
         return ask_careconnect(sender, text)
 
     elif state == "resources_menu":
-        return get_resource_reply(text)
+        return caregiver_message(sender, get_resource_reply(text))
 
     elif state == "ai_onboarding":
         remember_matching_language(sender, original_text)
@@ -698,12 +1023,12 @@ Type 'menu' anytime to return to the main menu.
         update_user(sender, state="ai_onboarding_confirm")
 
         confirmation_message = (
-            "Here's what I understood:\n"
+            "Here's what I've understood so far: 💜\n"
             + "Support: " + support_type + "\n"
             + "Preferred time: " + availability + "\n\n"
-            + "Is that right?\n\n"
+            + "Does this sound right?\n\n"
             + "1. Yes\n"
-            + "2. Change my preferences"
+            + "2. I'd like to change something"
         )
 
         return (
@@ -725,11 +1050,11 @@ Type 'menu' anytime to return to the main menu.
                 availability=""
             )
 
-            return (
-                "Of course. Tell me what kind of support "
-                "you're looking for and when you'd usually "
-                "feel comfortable chatting."
-            )
+            return caregiver_message(
+                    sender,
+                    "Of course. Tell me what kind of support you're looking for "
+                    "and when you'd usually feel comfortable chatting."
+                )
 
         if text not in ("1", "2"):
             intent = interpret_confirmation(original_text)
@@ -742,17 +1067,17 @@ Type 'menu' anytime to return to the main menu.
 
                 if not extracted["support_type"] and not extracted["availability"]:
                     update_user(sender, state="ai_onboarding")
-                    return (
-                        "Of course. What would you like to change "
-                        "about your preferences?"
-                    )
+                    return caregiver_message(
+                            sender,
+                            "Of course. What would you like to change about your preferences?"
+                        )
 
             else:
-                return (
-                    "Just checking, are these preferences correct? "
-                    "You can say yes, tell me what to change, "
-                    "or type 2 to start again."
-                )
+                return caregiver_message(
+                        sender,
+                        "Just checking, are these preferences correct? "
+                        "You can say yes, tell me what to change, or type 2 to start again."
+                    )
 
         if text != "1":
             extracted = extract_matching_preferences(original_text)
@@ -779,28 +1104,34 @@ Type 'menu' anytime to return to the main menu.
                 )
 
                 return (
-                    "Of course, I've updated that.\n\n"
-                    "Support: " + support_type + "\n"
-                    "Preferred time: " + availability + "\n\n"
-                    "Shall I look for a Support Buddy?\n\n"
-                    "1. Yes\n"
-                    "2. Start again"
-                )
+                        caregiver_message(sender, "Of course, I've updated that. 💜")
+                        + "\n\n"
+                        + caregiver_message(sender, "Support:")
+                        + " " + support_type + "\n"
+                        + caregiver_message(sender, "Preferred time:")
+                        + " " + availability + "\n\n"
+                        + caregiver_message(
+                            sender,
+                            "Shall I look for a Support Buddy?\n\n1. Yes\n2. Start again"
+                        )
+                    )
 
-            return (
-                "You can type 1 to confirm, 2 to start again, "
-                "or tell me what you'd like to change."
-            )
+            return caregiver_message(
+                    sender,
+                    "You can type 1 to confirm, 2 to start again, "
+                    "or tell me what you'd like to change."
+                )
 
         user = get_user(sender)
 
         if not user.get("support_type") or not user.get("availability"):
             update_user(sender, state="ai_onboarding")
 
-            return (
-                "I still need a little more information. "
-                "What kind of support would help you most?"
-            )
+            return caregiver_message(
+                    sender,
+                    "I still need a little more information. "
+                    "What kind of support would help you most?"
+                )
 
         matches = find_matches(user)
 
@@ -816,10 +1147,10 @@ Type 'menu' anytime to return to the main menu.
         )
 
         match_message = (
-            "I found a Support Buddy who shares your preferences:\n\n"
+            "We may have found someone you could connect with! 💜\n\n"
             + best_match["name"] + "\n\n"
             + preferences_text + "\n\n"
-            + "Would you like to send a connection request?\n\n"
+            + "Would you like to send them a connection request?\n\n"
             + "1. Yes\n"
             + "2. No"
         )
@@ -841,57 +1172,102 @@ Type 'menu' anytime to return to the main menu.
             if outcome == "missing":
                 # A second confirmation may arrive after the first consumed the preview.
                 if get_user(sender)["state"] == "match_pending":
-                    return "Your connection request is already saved. Type 'status' to check it."
+                    return caregiver_message(
+                            sender,
+                            "Your connection request is already saved. Type 'status' to check it.",
+                            required_text="'status'"
+                        )
                 reset_user(sender)
-                return "Your previous match selection is no longer available. Type 'menu' and choose 1 to search again."
+                return caregiver_message(
+                        sender,
+                        "Your previous match selection is no longer available. Type 'menu' and choose 1 to search again.",
+                        required_text="'menu'"
+                    )
             if outcome == "unavailable":
                 return buddy_unavailable_reply(sender)
             if outcome == "existing":
-                return "You already have a pending request to " + request["caregiver_name"] + ". Type 'status' to check your latest request."
+                return (
+                        caregiver_message(sender, "You already have a pending request to ")
+                        + request["caregiver_name"]
+                        + caregiver_message(
+                            sender,
+                            ". Type 'status' to check your latest request.",
+                            required_text="'status'"
+                        )
+                    )
 
-            return f"""
-Connection request sent to {request["caregiver_name"]}.
-
-Request ID: {request["id"]}
-Status: Pending
-
-Type 'status' to check whether they have responded.
-
-Type 'menu' to return to the main menu.
-"""
+            return (
+                    caregiver_message(sender, "Connection request sent to ")
+                    + request["caregiver_name"]
+                    + ".\n\n"
+                    + caregiver_message(sender, "Request ID:")
+                    + " " + str(request["id"]) + "\n"
+                    + caregiver_message(sender, "Status: Pending")
+                    + "\n\n"
+                    + caregiver_message(
+                        sender,
+                        "Type 'status' to check whether they have responded.",
+                        required_text="'status'"
+                    )
+                    + "\n\n"
+                    + caregiver_message(
+                        sender,
+                        "Type 'menu' to return to the main menu.",
+                        required_text="'menu'"
+                    )
+                )
 
         elif text == "2":
             reset_user(sender)
 
-            return """
-No problem. The match request was cancelled.
+            return caregiver_message(
+                    sender,
+                    """No worries! 💜
 
-Type 'menu' to return to the main menu.
-"""
+            Your connection request hasn't been sent.
 
-        return "Please type 1 for Yes or 2 for No."
+            You can look for another Support Buddy whenever you're ready.
+
+            Type 'menu' to return to the main menu.""",
+                    required_text="'menu'"
+                )
+
+        return caregiver_message(
+                sender,
+                "Please type 1 for Yes or 2 for No."
+            )
 
     elif state == "match_pending":
-        return """
-Your connection request is still pending.
+        return caregiver_message(sender, """
+Your connection request is awaiting a response. 💜
 
 Type 'status' to check for an update.
 
 Type 'menu' to return to the main menu.
-"""
+""")
 
     elif state == "matched":
         latest_request = get_latest_match_request(sender)
 
         if latest_request is not None:
-            return f"""
-You are currently matched with {latest_request["caregiver_name"]}.
+            return (
+                    caregiver_message(sender, "You are currently matched with ")
+                    + latest_request["caregiver_name"]
+                    + caregiver_message(
+                        sender,
+                        ".\n\nChat between buddies and contact sharing are not enabled yet.\n\n"
+                        "Type 'menu' to return to the main menu.",
+                        required_text="'menu'"
+                    )
+                )
 
-Chat between buddies and contact sharing are not enabled yet.
+        return caregiver_message(
+                sender,
+                "You are currently matched."
+            )
 
-Type 'menu' to return to the main menu.
-"""
-
-        return "You are currently matched."
-
-    return "Type 'menu' to return to the main menu."
+    return caregiver_message(
+        sender,
+        "Type 'menu' to return to the main menu.",
+        required_text="'menu'"
+    )
