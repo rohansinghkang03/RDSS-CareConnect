@@ -1,5 +1,7 @@
 import hmac
 import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply, interpret_confirmation, safe_adapt_message, remember_matching_language, get_matching_language_example
 from dotenv import load_dotenv
@@ -131,6 +133,20 @@ def registration_destination(sender, step):
     return caregiver_message(sender, message)
 
 
+def format_sgt_timestamp(value):
+    """Format UTC database timestamps for caregivers in Singapore."""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value).strip()
+        if raw.endswith(" UTC"):
+            raw = raw[:-4]
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo("Asia/Singapore")).strftime("%-d %B %Y, %-I:%M %p SGT")
+
+
 def application_status_reply(sender):
     application = get_support_buddy_application(sender)
 
@@ -145,7 +161,7 @@ def application_status_reply(sender):
         }.get(status, status)
 
         reply = "Your Support Buddy Application 💜\n\nStatus: " + label
-        reply += "\nSubmitted: " + application["submitted_at"] + " UTC"
+        reply += "\nSubmitted: " + format_sgt_timestamp(application["submitted_at"])
 
         if application["verification_required"]:
             reply += "\nExtra verification: " + (
@@ -163,7 +179,7 @@ def application_status_reply(sender):
         return caregiver_message(
             sender,
             reply + "\n\nType 'menu' to return to the main menu.",
-            required_text=application["submitted_at"]
+            required_text=format_sgt_timestamp(application["submitted_at"])
         )
 
     if get_support_buddy_draft(sender):
@@ -194,18 +210,20 @@ def begin_registration(sender):
 
 
 def admin_menu_reply():
-    return """
-Admin menu
+    return (
+        "RDSS Admin Panel 💜\n\n"
+        "1. View pending applications\n"
+        "2. Application summary\n"
+        "3. Log out\n\n"
+        "Reply with 1, 2 or 3. Type 'menu' to return here."
+    )
 
-1. View pending applications
-2. Application summary
-3. Log out
-"""
 
-
-def admin_application_list():
+def admin_application_list(sender=None):
     applications, total, counts = list_admin_applications("pending", 1, 25)
     if not applications:
+        if sender is not None:
+            update_user(sender, state="admin_menu")
         return "No pending Support Buddy applications.\n\n" + admin_menu_reply()
 
     lines = ["Pending Support Buddy applications", ""]
@@ -279,45 +297,65 @@ def handle_admin_message(sender, text, state):
     command = text.strip().lower()
 
     if command == "admin login":
+        if not ADMIN_PIN:
+            return "Admin login is unavailable. Please contact the system administrator."
         update_user(sender, state="admin_pin")
         return "Enter your admin PIN."
 
+    if state.startswith("admin_") and command == "menu":
+        if state == "admin_pin":
+            update_user(sender, state="main_menu")
+            return "Admin login cancelled. Type 'menu' to open the caregiver menu."
+        update_user(sender, state="admin_menu")
+        return admin_menu_reply()
+
+    if state.startswith("admin_") and command == "admin logout":
+        update_user(sender, state="main_menu")
+        return "You have been logged out."
+
     if state == "admin_pin":
-        if hmac.compare_digest(command, ADMIN_PIN):
+        if ADMIN_PIN and hmac.compare_digest(command, ADMIN_PIN):
             update_user(sender, state="admin_menu")
             return "Admin login successful.\n\n" + admin_menu_reply()
         return "Incorrect PIN. Try again or type 'menu'."
 
     if state == "admin_menu":
         if command == "1":
-            update_user(sender, state="admin_applications")
-            return admin_application_list()
+            applications, _, _ = list_admin_applications("pending", 1, 25)
+            update_user(sender, state="admin_applications" if applications else "admin_menu")
+            return admin_application_list(sender)
         if command == "2":
             return admin_application_summary()
-        if command in ("3", "admin logout", "menu"):
+        if command == "3":
             update_user(sender, state="main_menu")
             return "You have been logged out."
         return "Please choose 1, 2 or 3.\n\n" + admin_menu_reply()
 
     if state == "admin_applications":
+        if not list_admin_applications("pending", 1, 1)[0]:
+            update_user(sender, state="admin_menu")
+            return "No pending Support Buddy applications.\n\n" + admin_menu_reply()
         if command in ("menu", "back"):
             update_user(sender, state="admin_menu")
             return admin_menu_reply()
         application_id = admin_application_id_for_choice(command)
         if application_id is None:
-            return "Please reply with a listed application number, or type 'menu'.\n\n" + admin_application_list()
+            return "Please reply with a listed application number, or type 'menu'.\n\n" + admin_application_list(sender)
         update_user(sender, state=f"admin_review_{application_id}")
         return admin_application_detail(application_id)
 
     if state.startswith("admin_review_"):
+        if command == "back":
+            update_user(sender, state="admin_applications")
+            return admin_application_list(sender)
         application_id = int(state.rsplit("_", 1)[1])
         application = get_admin_application(application_id)
         if application is None:
             update_user(sender, state="admin_applications")
-            return admin_application_list()
+            return admin_application_list(sender)
         if command == "5":
             update_user(sender, state="admin_applications")
-            return admin_application_list()
+            return admin_application_list(sender)
         if command == "4":
             update_user(sender, state=f"admin_note_{application_id}")
             return "Type the private admin note to save, or type 'cancel'."
@@ -336,9 +374,12 @@ def handle_admin_message(sender, text, state):
             return str(error) + "\n\n" + admin_application_detail(application_id)
         update_user(sender, state="admin_applications")
         label = {"approve": "approved", "reject": "rejected", "verify": "marked verified"}[action]
-        return f"Application {label}.\n\n" + admin_application_list()
+        return f"Application {label}.\n\n" + admin_application_list(sender)
 
     if state.startswith("admin_note_"):
+        if command == "back":
+            update_user(sender, state="admin_menu")
+            return admin_menu_reply()
         application_id = int(state.rsplit("_", 1)[1])
         if command == "cancel":
             update_user(sender, state=f"admin_review_{application_id}")
@@ -346,7 +387,7 @@ def handle_admin_message(sender, text, state):
         application = get_admin_application(application_id)
         if application is None:
             update_user(sender, state="admin_applications")
-            return admin_application_list()
+            return admin_application_list(sender)
         try:
             review_support_buddy_application(
                 application_id,
@@ -580,7 +621,7 @@ Before we begin, which language would you prefer?
 3. தமிழ்
 4. Bahasa Melayu
 
-You can also type another language, such as Punjabi or Vietnamese.
+You can also type the name of any other language you prefer.
 
 You can change your language anytime by typing 'language'.
 """
@@ -709,7 +750,7 @@ def select_careconnect_language(sender, answer):
         return (
             "I couldn't identify that language. "
             "Please choose 1, 2, 3 or 4, "
-            "or type the name of your preferred language.\\n\\n"
+            "or type the name of your preferred language.\n\n"
             + LANGUAGE_SELECTION_MESSAGE
         )
 
@@ -762,10 +803,10 @@ def interpret_main_menu_intent(message):
 
 def main_menu_clarification(sender):
     message = (
-        "I'm here to help. 💙\\n\\n"
-        "Would you prefer to:\\n"
-        "1. Connect with another caregiver\\n"
-        "2. Talk to CareConnect AI\\n\\n"
+        "I'm here to help. 💜\n\n"
+        "Would you prefer to:\n"
+        "1. Connect with another caregiver\n"
+        "2. Talk to CareConnect AI\n\n"
         "You can also tell me a little more about what you need."
     )
 
@@ -917,12 +958,12 @@ def handle_message(sender, text):
             )
 
             message = (
-                "Let's find someone you can connect with. 💜\\n\\n"
+                "Let's find someone you can connect with. 💜\n\n"
                 "Everyone's caregiving journey is different, and "
-                "sometimes it helps to speak with someone who understands.\\n\\n"
+                "sometimes it helps to speak with someone who understands.\n\n"
                 "I'd like to learn a little about you so I can help "
-                "find a suitable Support Buddy.\\n\\n"
-                "How have things been for you lately?\\n\\n"
+                "find a suitable Support Buddy.\n\n"
+                "How have things been for you lately?\n\n"
                 "Feel free to share as much or as little as "
                 "you're comfortable with."
             )
@@ -941,14 +982,14 @@ def handle_message(sender, text):
             )
 
             message = (
-                "You're chatting with CareConnect AI. 💜\\n\\n"
+                "You're chatting with CareConnect AI. 💜\n\n"
                 "I'm here to listen, help you work through your thoughts, "
-                "or explore possible next steps.\\n\\n"
+                "or explore possible next steps.\n\n"
                 "You can talk about your caregiving experiences, "
-                "share what's on your mind, or ask for practical suggestions.\\n\\n"
+                "share what's on your mind, or ask for practical suggestions.\n\n"
                 "I'm an AI companion, not a human counsellor, "
-                "but I'll do my best to support you.\\n\\n"
-                "What's on your mind today?\\n\\n"
+                "but I'll do my best to support you.\n\n"
+                "What's on your mind today?\n\n"
                 "Type 'menu' anytime to return to the main menu."
             )
 
@@ -986,7 +1027,22 @@ def handle_message(sender, text):
         return ask_careconnect(sender, text)
 
     elif state == "resources_menu":
-        return caregiver_message(sender, get_resource_reply(text))
+        if text == "back":
+            return caregiver_message(sender, get_resources_menu())
+        if text in ("1", "2", "3", "4"):
+            update_user(sender, state="resources_detail")
+            return caregiver_message(sender, get_resource_reply(text))
+        return caregiver_message(sender, get_resources_menu())
+
+    elif state == "resources_detail":
+        if text == "back":
+            update_user(sender, state="resources_menu")
+            return caregiver_message(sender, get_resources_menu())
+        if text in ("1", "2", "3", "4"):
+            return caregiver_message(sender, get_resource_reply(text))
+        return caregiver_message(
+            sender, "Type 'back' to view resource categories or 'menu' for the main menu."
+        )
 
     elif state == "ai_onboarding":
         remember_matching_language(sender, original_text)
@@ -1222,13 +1278,12 @@ def handle_message(sender, text):
 
             return caregiver_message(
                     sender,
-                    """No worries! 💜
-
-            Your connection request hasn't been sent.
-
-            You can look for another Support Buddy whenever you're ready.
-
-            Type 'menu' to return to the main menu.""",
+                    (
+                        "No worries! 💜\n\n"
+                        "Your connection request hasn't been sent.\n\n"
+                        "You can look for another Support Buddy whenever you're ready.\n\n"
+                        "Type 'menu' to return to the main menu."
+                    ),
                     required_text="'menu'"
                 )
 

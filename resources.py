@@ -29,7 +29,7 @@ Information about RDSS programmes and services
 will be available here once verified resources
 have been added.
 
-Type 'menu' to return to the main menu.
+Type 'back' for resource categories, or 'menu' for the main menu.
 """,
 
         "2": """
@@ -39,7 +39,7 @@ Verified information about caregiving assistance,
 respite and other support services will be
 available here.
 
-Type 'menu' to return to the main menu.
+Type 'back' for resource categories, or 'menu' for the main menu.
 """,
 
         "3": """
@@ -48,7 +48,7 @@ Financial & Social Support 💜
 Verified information about financial assistance
 and social support schemes will be available here.
 
-Type 'menu' to return to the main menu.
+Type 'back' for resource categories, or 'menu' for the main menu.
 """,
 
         "4": """
@@ -63,7 +63,7 @@ are not emergency support services.
 Verified Singapore support contacts will
 be added here.
 
-Type 'menu' to return to the main menu.
+Type 'back' for resource categories, or 'menu' for the main menu.
 """
     }
 
