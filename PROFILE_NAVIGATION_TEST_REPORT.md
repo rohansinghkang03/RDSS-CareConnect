@@ -13,3 +13,11 @@ Every handler reply has an existing navigation instruction or receives a context
 Added checks cover numbered menus, saved-profile ownership and viewing, enable/decline, withdrawal cancellation and confirmation, stale-field suppression without consent, profile service failures, rejection/edit cancellation, translation privacy and exact-wording preservation, AI footers, contextual status links, language selection, nonduplicated navigation, fallback behavior, and exits from invalid-edit/withdrawal prompts. All previous privacy, concurrency, migration, routing and webhook checks also pass.
 
 No schema migration is required for this follow-up. No Render database connection, AI provider request, WhatsApp send or deployment was performed by these tests. The three pre-existing untracked local files remain untouched.
+
+## Malay cancellation follow-up
+
+The WhatsApp cancellation test preserved permission but its response fell back to English. The profile renderer had a strict ASCII-quote check that could reject a valid translated command; the exact provider output that triggered this particular fallback is not available. That check now accepts intact command words with alternative punctuation while still rejecting missing commands.
+
+Malay profile pages, saved-field labels, permission status, cancellation notices and withdrawal confirmation now have fixed local wording. These recognized templates do not depend on a translation-model response. Saved caregiver text remains inserted verbatim afterward. Unknown templates and other languages retain the existing translation path and English safety fallback.
+
+Verification: 32 isolated integration tests passed, including cancellation remaining in Malay with model translation deliberately unavailable, saved non-Malay text preserved inside a Malay profile, withdrawal deletion/status, smart-quoted command handling and missing-command rejection. Syntax and whitespace checks passed. No database migration is required.

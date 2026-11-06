@@ -487,6 +487,44 @@ class Phase2Tests(unittest.TestCase):
         self.assertIn("'menu'",retry)
         self.assertIn('Cancel and keep my profile',retry)
 
+    def test_malay_withdrawal_cancel_uses_fixed_wording_without_model(self):
+        self.pending()
+        chat.get_matching_language_example.return_value='Malay'
+        chat.safe_adapt_message.side_effect=AssertionError('No model translation should be needed for these screens')
+        profile=handlers.handle_message('synthetic-a','profile')
+        self.assertIn('Profil penjaga saya',profile)
+        confirm=handlers.handle_message('synthetic-a','3')
+        self.assertIn('Tarik balik kebenaran profil?',confirm)
+        cancelled=handlers.handle_message('synthetic-a','2')
+        self.assertIn('Penarikan balik kebenaran dibatalkan',cancelled)
+        self.assertIn('Cadangan profil: Diaktifkan',cancelled)
+        self.assertNotIn('Withdrawal cancelled',cancelled)
+        self.assertNotIn('My caregiver profile',cancelled)
+        self.assertEqual(analytics.get_profiling_consent('synthetic-a'),'granted')
+
+    def test_malay_profile_saved_wording_is_preserved_without_model(self):
+        sid=self.pending()
+        exact='晚上有空，想找人聊聊。'
+        analytics.review_profile_suggestion('synthetic-a',sid,True,exact)
+        chat.get_matching_language_example.return_value='Bahasa Melayu'
+        chat.safe_adapt_message.side_effect=AssertionError('No model translation should be needed')
+        profile=handlers.handle_message('synthetic-a','profile')
+        self.assertIn('Keperluan sokongan: '+exact,profile)
+        handlers.handle_message('synthetic-a','3')
+        withdrawn=handlers.handle_message('synthetic-a','1')
+        self.assertIn('kebenaran ditarik balik',withdrawn)
+        self.assertIn('Tiada maklumat profil disimpan',withdrawn)
+        self.assertNotIn(exact,withdrawn)
+
+    def test_profile_translation_accepts_smart_quotes_around_commands(self):
+        import profile_navigation
+        chat.get_matching_language_example.return_value='Tamil'
+        chat.safe_adapt_message.side_effect=lambda *args,**kwargs: 'Taip “menu” untuk menu utama.'
+        result=profile_navigation.profile_text('synthetic-a',"Type 'menu' for the main menu.")
+        self.assertIn('Taip',result)
+        chat.safe_adapt_message.side_effect=lambda *args,**kwargs: 'Command was removed.'
+        self.assertEqual(profile_navigation.profile_text('synthetic-a',"Type 'menu' for the main menu."),"Type 'menu' for the main menu.")
+
     def test_signed_webhook_through_real_profile_handler(self):
         self.pending()
         database.update_user('synthetic-a',state='ai_chat')
