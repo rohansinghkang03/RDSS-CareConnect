@@ -1,7 +1,7 @@
 """Phase 2 opt-in profile suggestions and structured analytics (PostgreSQL).
 
-No WhatsApp message text is accepted by record_usage_event. This module is
-intentionally not wired into message routing until event semantics are agreed.
+No WhatsApp message text is accepted by record_usage_event. Routing records
+allowlisted events and numeric resource categories; analytics are best effort.
 """
 from database_postgres import get_connection
 from profile_validation import is_safe_profile_value
@@ -19,7 +19,7 @@ PROFILE_FIELDS = frozenset({
 
 def record_usage_event(sender, event_type, category=None):
     """Record a structured event; never pass chat text as category."""
-    if event_type not in EVENT_TYPES:
+    if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
         raise ValueError("Unsupported analytics event")
     allowed_categories = {
         "resource_category_opened": {"1", "2", "3", "4"}

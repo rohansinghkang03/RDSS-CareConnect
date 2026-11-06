@@ -84,6 +84,7 @@ class Phase2Tests(unittest.TestCase):
             with conn.cursor() as cur:
                 cur.execute('TRUNCATE users CASCADE')
                 cur.execute('TRUNCATE whatsapp_receipts, conversation_messages')
+                cur.execute('TRUNCATE support_buddy_applications, support_buddy_drafts, match_requests, match_previews, admin_review_events RESTART IDENTITY CASCADE')
         database.create_user('synthetic-a')
         database.create_user('synthetic-b')
         for name in ('ask_careconnect', 'get_matching_language_example', 'remember_matching_language'):
@@ -524,6 +525,209 @@ class Phase2Tests(unittest.TestCase):
         self.assertIn('Taip',result)
         chat.safe_adapt_message.side_effect=lambda *args,**kwargs: 'Command was removed.'
         self.assertEqual(profile_navigation.profile_text('synthetic-a',"Type 'menu' for the main menu."),"Type 'menu' for the main menu.")
+
+    def approved_buddy(self):
+        return self.rows("""INSERT INTO support_buddy_applications
+            (sender,full_name,display_name,support_types,availability,languages,status,
+             consent,submitted_at,verification_required)
+            VALUES ('synthetic-b','Synthetic Buddy','Synthetic Buddy','Peer support',
+                    'Evenings','English','approved',1,CURRENT_TIMESTAMP,0) RETURNING id""")[0][0]
+
+    def prepare_actual_buddy_request(self):
+        self.approved_buddy()
+        chat.get_matching_language_example.return_value='English'
+        chat.extract_matching_preferences.return_value={'support_type':'Peer support','availability':'Evenings'}
+        chat.generate_onboarding_reply.return_value='Synthetic onboarding reply'
+        handlers.handle_message('synthetic-a','menu')
+        handlers.handle_message('synthetic-a','1')
+        handlers.handle_message('synthetic-a','I want Peer support in the Evenings')
+        preview=handlers.handle_message('synthetic-a','1')
+        self.assertIn('Synthetic Buddy',preview)
+        self.assertEqual(database.get_user('synthetic-a')['state'],'confirm_match')
+        self.assertEqual(self.rows('SELECT id FROM match_requests'), [])
+        sent=handlers.handle_message('synthetic-a','1')
+        self.assertIn('Connection request sent',sent)
+        return self.rows('SELECT id FROM match_requests')[0][0]
+
+    def test_natural_language_dispatch_covers_all_eight_menu_options(self):
+        chat.get_matching_language_example.return_value='English'
+        cases=[('1','I want a support buddy','ai_onboarding'),
+               ('2','I want to talk to the AI','ai_chat'),
+               ('3','I need financial support resources','resources_menu'),
+               ('4','I want to volunteer as a buddy','buddy_registration_name'),
+               ('5','I want to contact RDSS staff','main_menu'),
+               ('6','Show my saved caregiver profile','profile_menu'),
+               ('7','Check the progress of my request','status_menu'),
+               ('8','I want to change my language','language_selection')]
+        for label,utterance,state in cases:
+            with self.subTest(label=label):
+                database.update_user('synthetic-a',state='main_menu')
+                chat.client.responses.create.return_value.output_text=label
+                result=handlers.handle_message('synthetic-a',utterance)
+                self.assertEqual(database.get_user('synthetic-a')['state'],state)
+                self.assertIn("'menu'",result)
+                args=chat.client.responses.create.call_args.kwargs
+                self.assertEqual(args['input'],utterance)
+                self.assertIn('6 =',args['instructions'])
+                self.assertIn('7 =',args['instructions'])
+                self.assertIn('8 =',args['instructions'])
+
+    def test_natural_language_unknown_and_ambiguous_do_not_guess_or_save(self):
+        chat.get_matching_language_example.return_value='English'
+        for response in ('CLARIFY','UNKNOWN','9','1 then 6','{"label": "1"}'):
+            with self.subTest(response=response):
+                database.update_user('synthetic-a',state='main_menu')
+                chat.client.responses.create.return_value.output_text=response
+                reply=handlers.handle_message('synthetic-a','I am feeling lonely')
+                self.assertEqual(database.get_user('synthetic-a')['state'],'main_menu')
+                self.assertIn("'menu'",reply)
+                self.assertEqual(self.rows('SELECT id FROM match_requests'), [])
+                self.assertEqual(self.rows('SELECT * FROM caregiver_profile_fields'), [])
+        chat.client.responses.create.side_effect=RuntimeError('private diagnostic')
+        try:
+            self.assertIn('choose an option',handlers.handle_message('synthetic-a','Please help me'))
+        finally:
+            chat.client.responses.create.side_effect=None
+
+    def test_buddy_end_to_end_accept_ownership_and_repeat_response(self):
+        request_id=self.prepare_actual_buddy_request()
+        inbox=handlers.handle_message('synthetic-b','requests')
+        self.assertIn('Request #'+str(request_id),inbox)
+        self.assertIn('Peer support',inbox)
+        self.assertIn('not found',handlers.handle_message('synthetic-a','accept '+str(request_id)))
+        self.assertIn('not found',handlers.handle_message('synthetic-a','request '+str(request_id)))
+        accepted=handlers.handle_message('synthetic-b','accept '+str(request_id))
+        self.assertIn('accepted',accepted)
+        self.assertIn('not enabled',accepted)
+        self.assertIn('already accepted',handlers.handle_message('synthetic-b','decline '+str(request_id)))
+        self.assertIn('Status: Accepted',handlers.handle_message('synthetic-a','status'))
+        self.assertEqual(self.rows('SELECT status FROM match_requests'), [('accepted',)])
+        self.assertEqual(self.rows('SELECT * FROM caregiver_sharing_decisions'), [])
+
+    def test_buddy_end_to_end_decline_and_next_search_excludes_same_buddy(self):
+        request_id=self.prepare_actual_buddy_request()
+        self.assertIn('declined',handlers.handle_message('synthetic-b','decline '+str(request_id)))
+        self.assertIn('another buddy',handlers.handle_message('synthetic-a','status'))
+        handlers.handle_message('synthetic-a','1')
+        handlers.handle_message('synthetic-a','Peer support in Evenings')
+        no_match=handlers.handle_message('synthetic-a','1')
+        self.assertIn("couldn't find",no_match)
+        self.assertEqual(self.rows('SELECT status FROM match_requests'), [('declined',)])
+
+    def test_buddy_concurrent_confirmations_create_one_request(self):
+        buddy_id=self.approved_buddy()
+        database.update_user('synthetic-a',support_type='Peer support',availability='Evenings')
+        database.save_match_preview('synthetic-a',{'buddy_id':buddy_id,'sender':'synthetic-b','name':'Synthetic Buddy','percentage':100},database.get_user('synthetic-a'))
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            results=list(pool.map(database.create_selected_match_request,['synthetic-a','synthetic-a']))
+        self.assertEqual(sorted(outcome for outcome,_ in results),['created','missing'])
+        self.assertEqual(self.rows('SELECT count(*) FROM match_requests'), [(1,)])
+        request_id=self.rows('SELECT id FROM match_requests')[0][0]
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            outcomes=list(pool.map(lambda decision: database.respond_to_buddy_request('synthetic-b',request_id,decision),['accepted','declined']))
+        self.assertEqual(sorted(outcome for outcome,_ in outcomes),['already_resolved','updated'])
+        self.assertEqual(len(self.rows('SELECT id FROM match_requests')),1)
+
+    def test_buddy_ineligible_before_confirm_or_accept_is_blocked(self):
+        buddy_id=self.approved_buddy()
+        database.save_match_preview('synthetic-a',{'buddy_id':buddy_id,'sender':'synthetic-b','name':'Synthetic Buddy','percentage':100},database.get_user('synthetic-a'))
+        self.rows("UPDATE support_buddy_applications SET verification_required=1,verified_at=NULL")
+        self.assertEqual(database.create_selected_match_request('synthetic-a')[0],'unavailable')
+        self.assertEqual(self.rows('SELECT id FROM match_requests'), [])
+        self.rows('UPDATE support_buddy_applications SET verification_required=0')
+        database.save_match_preview('synthetic-a',{'buddy_id':buddy_id,'sender':'synthetic-b','name':'Synthetic Buddy','percentage':100},database.get_user('synthetic-a'))
+        _,request=database.create_selected_match_request('synthetic-a')
+        self.rows("UPDATE support_buddy_applications SET status='rejected'")
+        self.assertEqual(database.respond_to_buddy_request('synthetic-b',request['id'],'accepted')[0],'unavailable')
+        self.assertEqual(self.rows('SELECT status FROM match_requests'), [('pending',)])
+
+    def test_registration_consent_submission_and_events_preserve_name_case(self):
+        chat.get_matching_language_example.return_value='English'
+        database.update_user('synthetic-a',state='main_menu')
+        handlers.handle_message('synthetic-a','4')
+        answers=['Synthetic Volunteer','1','Synthetic Display','1','2','1','3','1','skip']
+        for answer in answers:
+            handlers.handle_message('synthetic-a',answer)
+        self.assertEqual(database.get_user('synthetic-a')['state'],'buddy_registration_review')
+        self.assertEqual(self.rows('SELECT id FROM support_buddy_applications'), [])
+        handlers.handle_message('synthetic-a','1')
+        self.assertEqual(self.rows('SELECT id FROM support_buddy_applications'), [])
+        submitted=handlers.handle_message('synthetic-a','1')
+        self.assertIn('submitted',submitted)
+        self.assertEqual(self.rows('SELECT full_name,display_name,consent,status FROM support_buddy_applications'), [('Synthetic Volunteer','Synthetic Display',1,'pending')])
+        handlers.handle_message('synthetic-a','1')
+        events=[row[0] for row in self.rows('SELECT event_type FROM usage_events')]
+        self.assertEqual(events.count('buddy_application_started'),1)
+        self.assertEqual(events.count('buddy_application_submitted'),1)
+
+    def test_analytics_rejects_free_text_categories_and_event_payloads(self):
+        private='Private caregiver story containing a name'
+        for event in analytics.EVENT_TYPES:
+            with self.subTest(event=event):
+                with self.assertRaises(ValueError):
+                    analytics.record_usage_event('synthetic-a',event,private)
+        for event in ('unknown',private,None,{},[]):
+            with self.assertRaises(ValueError):
+                analytics.record_usage_event('synthetic-a',event)
+        self.assertEqual(self.rows('SELECT id FROM usage_events'), [])
+        analytics.record_usage_event('synthetic-a','resource_category_opened','2')
+        analytics.record_usage_event('synthetic-a','ai_chat_started')
+        self.assertEqual(self.rows('SELECT event_type,category FROM usage_events ORDER BY id'), [('resource_category_opened','2'),('ai_chat_started',None)])
+
+    def test_routed_usage_events_cover_buddy_profile_and_numeric_resource(self):
+        self.prepare_actual_buddy_request()
+        handlers.handle_message('synthetic-a','menu')
+        handlers.handle_message('synthetic-a','2')
+        handlers.handle_message('synthetic-a','menu')
+        handlers.handle_message('synthetic-a','3')
+        handlers.handle_message('synthetic-a','2')
+        self.pending()
+        handlers.handle_message('synthetic-a','review profile')
+        handlers.handle_message('synthetic-a','3')
+        events=self.rows('SELECT event_type,category FROM usage_events')
+        names={event for event,_ in events}
+        self.assertTrue({'main_menu_opened','ai_chat_started','resource_hub_opened','resource_category_opened','buddy_search_started','support_need_selected','buddy_match_found','profile_suggestion_reviewed'} <= names)
+        self.assertIn(('resource_category_opened','2'),events)
+        self.assertTrue(all(category in (None,'1','2','3','4') for _,category in events))
+        self.assertEqual(sum(event=='profile_suggestion_reviewed' for event,_ in events),1)
+        self.assertTrue(all('Peer support' not in str(row) for row in events))
+
+    def test_analytics_failure_is_private_and_does_not_break_routing(self):
+        chat.get_matching_language_example.return_value='English'
+        with patch.object(analytics,'record_usage_event',side_effect=RuntimeError('private caregiver text')):
+            with self.assertLogs(handlers.__name__,level='WARNING') as logs:
+                reply=handlers.handle_message('synthetic-a','menu')
+        self.assertIn('How can I support',reply)
+        self.assertNotIn('private caregiver text',' '.join(logs.output))
+
+    def test_incoming_buddy_requests_are_visible_through_status_menu(self):
+        request_id=self.prepare_actual_buddy_request()
+        menu=handlers.handle_message('synthetic-b','my status')
+        self.assertIn('4. Incoming buddy connection requests',menu)
+        inbox=handlers.handle_message('synthetic-b','4')
+        self.assertIn('Request #'+str(request_id),inbox)
+        self.assertIn('accept '+str(request_id),inbox)
+        self.assertIn("'menu'",inbox)
+        self.assertNotIn('synthetic-a',inbox)
+
+    def test_same_display_name_does_not_authorize_another_buddy(self):
+        request_id=self.prepare_actual_buddy_request()
+        database.create_user('synthetic-c')
+        self.rows("""INSERT INTO support_buddy_applications(sender,display_name,support_types,availability,status,consent,submitted_at,verification_required)
+            VALUES ('synthetic-c','Synthetic Buddy','Peer support','Evenings','approved',1,CURRENT_TIMESTAMP,0)""")
+        self.assertEqual(database.get_buddy_requests('synthetic-c')[0], [])
+        self.assertEqual(database.respond_to_buddy_request('synthetic-c',request_id,'accepted')[0],'not_found')
+        self.assertEqual(self.rows('SELECT status FROM match_requests'), [('pending',)])
+
+    def test_application_timestamp_formats_postgres_short_offsets_and_iso(self):
+        from datetime import datetime,timezone
+        values=['2026-11-06 16:20:11.292956+00','2026-11-06T16:20:11+00:00',
+                '2026-11-06T16:20:11Z','2026-11-06 16:20:11 UTC',
+                '2026-11-06 16:20:11.12345+00','2026-11-06 16:20:11.1+00',
+                '2026-11-07 00:20:11+08',datetime(2026,11,6,16,20,11,tzinfo=timezone.utc)]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(handlers.format_sgt_timestamp(value),'7 November 2026, 12:20 AM SGT')
 
     def test_signed_webhook_through_real_profile_handler(self):
         self.pending()

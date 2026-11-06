@@ -1,5 +1,6 @@
 import hmac
 import os
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -158,7 +159,15 @@ def format_sgt_timestamp(value):
         raw = str(value).strip()
         if raw.endswith(" UTC"):
             raw = raw[:-4]
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        raw = raw.replace("Z", "+00:00")
+        # PostgreSQL text timestamps may use +00; Python 3.9 requires +00:00.
+        if "T" in raw or " " in raw:
+            raw = re.sub(r"([+-]\d{2})$", r"\1:00", raw)
+        raw = re.sub(
+            r"(\d{2}:\d{2}:\d{2})\.(\d{1,6})(?=$|[+-])",
+            lambda match: match[1] + "." + match[2].ljust(6, "0"), raw,
+        )
+        dt = datetime.fromisoformat(raw)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(ZoneInfo("Asia/Singapore")).strftime("%-d %B %Y, %-I:%M %p SGT")
@@ -217,6 +226,7 @@ def begin_registration(sender):
     application = get_support_buddy_application(sender)
     if application and application["status"] not in ("rejected", "declined"):
         return application_status_reply(sender)
+    track_usage_safely(sender, "buddy_application_started")
     start_support_buddy_draft(sender)
     draft = get_support_buddy_draft(sender)
     return (
@@ -466,6 +476,7 @@ def handle_registration(sender, text, state):
                 return registration_destination(sender, next_registration_step(draft))
             if not submitted:
                 return application_status_reply(sender)
+            track_usage_safely(sender, "buddy_application_submitted")
             return "Your Support Buddy application has been submitted.\n\n" + application_status_reply(sender) + "\nType 'application status' anytime to check it."
         if answer == "2":
             return registration_destination(sender, "review")
@@ -577,6 +588,7 @@ def handle_buddy_request_command(sender, text):
 
 
 def buddy_unavailable_reply(sender, no_matches=False):
+    track_usage_safely(sender, "buddy_match_unavailable")
     update_user(sender, state="buddy_unavailable")
 
     if no_matches:
@@ -717,7 +729,8 @@ def show_status_menu(sender):
         "My status 💜\n\n"
         "1. My buddy connection request\n"
         "2. My Support Buddy application\n"
-        "3. Return to main menu\n\n"
+        "3. Return to main menu\n"
+        "4. Incoming buddy connection requests\n\n"
         "Choose a number. Type 'menu' for the main menu."
     ))
 
@@ -819,7 +832,7 @@ def interpret_main_menu_intent(message):
             instructions=(
                 "Classify a caregiver's message for the RDSS CareConnect "
                 "WhatsApp main menu. Return exactly ONE label: "
-                "1, 2, 3, 4, 5, CLARIFY, or UNKNOWN. "
+                "1, 2, 3, 4, 5, 6, 7, 8, CLARIFY, or UNKNOWN. "
                 "1 = explicitly wants to connect with another caregiver "
                 "or find a Support Buddy. "
                 "2 = explicitly wants to talk to CareConnect AI. "
@@ -827,6 +840,9 @@ def interpret_main_menu_intent(message):
                 "such as financial support. "
                 "4 = wants to volunteer or register as a Support Buddy. "
                 "5 = wants to contact RDSS staff directly. "
+                "6 = wants to view their profile or manage profile permission. "
+                "7 = wants to check a buddy request or application status. "
+                "8 = wants to change their preferred language. "
                 "CLARIFY = expresses loneliness, distress, uncertainty, "
                 "or a general desire to talk without clearly choosing "
                 "AI or peer support. "
@@ -834,12 +850,13 @@ def interpret_main_menu_intent(message):
                 "Never infer a specific service from distress alone. "
                 "Do not provide advice or explanations."
             ),
-            input=message
+            input=message,
+            store=False
         )
 
         label = response.output_text.strip().upper()
 
-        if re.fullmatch(r"[1-5]|CLARIFY|UNKNOWN", label):
+        if re.fullmatch(r"[1-8]|CLARIFY|UNKNOWN", label):
             return label
 
     except Exception as error:
@@ -943,6 +960,8 @@ def _handle_message(sender, text):
             text = "application status"
         elif text == "3":
             text = "menu"
+        elif text == "4":
+            return handle_buddy_request_command(sender, "requests")
         elif text not in ("menu", "language", "status", "application status"):
             return show_status_menu(sender)
 
@@ -1031,20 +1050,20 @@ def _handle_message(sender, text):
         return show_careconnect_menu(sender)
 
     if state.startswith("buddy_registration_"):
-        return handle_registration(sender, text, state)
+        return handle_registration(sender, original_text, state)
 
     if state == "main_menu":
         if not get_matching_language_example(sender):
             update_user(sender, state="language_selection")
             return LANGUAGE_SELECTION_MESSAGE
 
-        if text not in ("1", "2", "3", "4", "5"):
+        if text not in ("1", "2", "3", "4", "5", "6", "7", "8"):
             intent = interpret_main_menu_intent(original_text)
 
             if intent == "CLARIFY":
                 return main_menu_clarification(sender)
 
-            if intent in ("1", "2", "3", "4", "5"):
+            if intent in ("1", "2", "3", "4", "5", "6", "7", "8"):
                 text = intent
 
             else:
@@ -1061,6 +1080,7 @@ def _handle_message(sender, text):
                 return message
 
         if text == "1":
+            track_usage_safely(sender, "buddy_search_started")
             update_user(
                 sender,
                 state="ai_onboarding",
@@ -1132,6 +1152,18 @@ def _handle_message(sender, text):
                     "RDSS contact information will be added here."
                 )
 
+        elif text == "6":
+            from profile_navigation import show_profile
+            return show_profile(sender)
+
+        elif text == "7":
+            update_user(sender, state="status_menu")
+            return show_status_menu(sender)
+
+        elif text == "8":
+            update_user(sender, state="language_selection")
+            return LANGUAGE_SELECTION_MESSAGE
+
         return caregiver_message(
                 sender,
                 "Please choose a number from 1 to 8. Type 'menu' to restart.",
@@ -1184,6 +1216,8 @@ def _handle_message(sender, text):
             support_type=support_type,
             availability=availability
         )
+        if extracted["support_type"] and support_type != current.get("support_type"):
+            track_usage_safely(sender, "support_need_selected")
 
         reply = generate_onboarding_reply(
             original_text,
@@ -1312,6 +1346,7 @@ def _handle_message(sender, text):
         if not matches:
             return buddy_unavailable_reply(sender, no_matches=True)
 
+        track_usage_safely(sender, "buddy_match_found")
         best_match = matches[0]
 
         save_match_preview(sender, best_match, user)

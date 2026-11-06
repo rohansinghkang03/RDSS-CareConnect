@@ -177,6 +177,8 @@ def handle_profile_navigation(sender, text, state, original_text):
     if state == 'profile_review':
         if text == '1':
             profiles.review_profile_suggestion(sender, pending['id'], True)
+            from handlers import track_usage_safely
+            track_usage_safely(sender, 'profile_suggestion_reviewed')
             return show_profile(sender, 'Your suggestion has been added to your caregiver profile. 💜')
         if text == '2':
             update_user(sender, state='profile_review_edit')
@@ -187,6 +189,8 @@ def handle_profile_navigation(sender, text, state, original_text):
                 "Type 'profile' to return to your profile, or 'menu' for the main menu.")
         if text == '3':
             profiles.review_profile_suggestion(sender, pending['id'], False)
+            from handlers import track_usage_safely
+            track_usage_safely(sender, 'profile_suggestion_reviewed')
             return show_profile(sender, 'Suggestion rejected. Nothing was added to your profile. 💜')
         return suggestion_message(sender, pending)
     if state == 'profile_review_edit':
@@ -200,6 +204,8 @@ def handle_profile_navigation(sender, text, state, original_text):
     if state == 'profile_review_confirm':
         if text == '1':
             profiles.confirm_pending_profile_edit(sender, pending['id'])
+            from handlers import track_usage_safely
+            track_usage_safely(sender, 'profile_suggestion_reviewed')
             return show_profile(sender, 'Your edited profile information has been saved. 💜')
         if text == '2':
             profiles.cancel_pending_profile_edit(sender, pending['id'])
