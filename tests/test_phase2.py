@@ -90,6 +90,7 @@ class Phase2Tests(unittest.TestCase):
             getattr(chat, name).reset_mock()
         chat.get_matching_language_example.return_value = None
         chat.ask_careconnect.return_value = 'Synthetic AI reply'
+        chat.safe_adapt_message.side_effect=lambda message,*args,**kwargs: message
         chat.client.reset_mock()
 
     def rows(self, sql, params=()):
@@ -257,7 +258,7 @@ class Phase2Tests(unittest.TestCase):
 
     def test_routing_restored_and_withdrawal_global(self):
         database.update_user('synthetic-a', state='ai_chat')
-        self.assertEqual(handlers.handle_message('synthetic-a','Hello Mixed CASE'), 'Synthetic AI reply')
+        self.assertIn('Synthetic AI reply', handlers.handle_message('synthetic-a','Hello Mixed CASE'))
         chat.ask_careconnect.assert_called_once_with('synthetic-a','Hello Mixed CASE')
         database.update_user('synthetic-a', state='resources_menu')
         self.assertIn('Type', handlers.handle_message('synthetic-a','1'))
@@ -319,6 +320,172 @@ class Phase2Tests(unittest.TestCase):
             handler.assert_any_call('synthetic-a','Mixed CASE')
             self.assertEqual(send.call_count,2)
         self.assertEqual(self.rows("SELECT count(*) FROM whatsapp_receipts WHERE status='completed'"), [(2,)])
+
+    def test_main_menu_profile_status_and_language_are_visible(self):
+        chat.get_matching_language_example.return_value='English'
+        menu=handlers.handle_message('synthetic-a','menu')
+        for label in ('6. 👤 My profile','7. 📋 My request','8. 🌐 Change language'):
+            self.assertIn(label,menu)
+        profile=handlers.handle_message('synthetic-a','6')
+        self.assertIn('Not enabled',profile)
+        self.assertIn('Withdraw permission',profile)
+        self.assertEqual(database.get_user('synthetic-a')['state'],'profile_menu')
+        handlers.handle_message('synthetic-a','4')
+        self.assertIn('My status',handlers.handle_message('synthetic-a','7'))
+        self.assertIn('do not have any match requests',handlers.handle_message('synthetic-a','1'))
+        self.assertIn("haven't submitted",handlers.handle_message('synthetic-a','2'))
+        handlers.handle_message('synthetic-a','3')
+        self.assertIn('which language',handlers.handle_message('synthetic-a','8'))
+
+    def test_numbered_profile_enable_view_withdraw_cancel_confirm(self):
+        chat.get_matching_language_example.return_value='English'
+        handlers.handle_message('synthetic-a','profile')
+        prompt=handlers.handle_message('synthetic-a','2')
+        self.assertIn('choose 6',prompt)
+        self.assertIn('then 3',prompt)
+        self.assertEqual(analytics.get_profiling_consent('synthetic-a'),'not_given')
+        enabled=handlers.handle_message('synthetic-a','1')
+        self.assertIn('Enabled',enabled)
+        self.assertIn('Withdraw permission',enabled)
+        epoch=analytics.get_profiling_epoch('synthetic-a')
+        # Reading the permission notice again must not reset the message window.
+        handlers.handle_message('synthetic-a','2')
+        handlers.handle_message('synthetic-a','1')
+        self.assertEqual(analytics.get_profiling_epoch('synthetic-a'),epoch)
+        sid=analytics.propose_profile_field('synthetic-a','support_needs','Evening support')
+        analytics.review_profile_suggestion('synthetic-a',sid,True)
+        saved=handlers.handle_message('synthetic-a','profile')
+        self.assertIn('Evening support',saved)
+        self.assertNotIn('Evening support',handlers.handle_message('synthetic-b','profile'))
+        confirmation=handlers.handle_message('synthetic-a','3')
+        self.assertIn('1. Yes, withdraw',confirmation)
+        self.assertEqual(analytics.get_profiling_consent('synthetic-a'),'granted')
+        self.assertIn('cancelled',handlers.handle_message('synthetic-a','2'))
+        self.assertIn('Evening support',handlers.handle_message('synthetic-a','profile'))
+        handlers.handle_message('synthetic-a','3')
+        withdrawn=handlers.handle_message('synthetic-a','1')
+        self.assertIn('Disabled (withdrawn)',withdrawn)
+        self.assertIn('No profile information is saved',withdrawn)
+        self.assertNotIn('Evening support',withdrawn)
+        self.assertEqual(self.rows('SELECT * FROM caregiver_profile_fields'), [])
+        self.assertEqual(self.rows('SELECT * FROM caregiver_profile_suggestions'), [])
+
+    def test_profile_translation_excludes_and_preserves_caregiver_text(self):
+        import profile_navigation
+        self.pending()
+        sid=analytics.get_pending_profile_suggestion('synthetic-a')['id']
+        exact='需要情绪支持，晚上有空。'
+        analytics.review_profile_suggestion('synthetic-a',sid,True,exact)
+        chat.get_matching_language_example.return_value='Mandarin Chinese'
+        seen=[]
+        def translate(message,*args,**kwargs):
+            seen.append(message)
+            return message.replace('My caregiver profile','我的照护者档案').replace('Withdraw permission','撤回同意')
+        chat.safe_adapt_message.side_effect=translate
+        result=handlers.handle_message('synthetic-a','profile')
+        self.assertIn('我的照护者档案',result)
+        self.assertIn(exact,result)
+        self.assertTrue(seen)
+        self.assertTrue(all(exact not in message for message in seen))
+        # Corrupted translation placeholders fall back to the complete original template.
+        chat.safe_adapt_message.side_effect=lambda message,*a,**k: 'broken translation'
+        result=handlers.handle_message('synthetic-a','profile')
+        self.assertIn(exact,result)
+        self.assertIn('3. Withdraw permission',result)
+        self.assertEqual(profile_navigation.profile_text('synthetic-a','__ONE__ __TWO__',
+                         {'__ONE__':'__TWO__','__TWO__':'exact'}),'__TWO__ exact')
+
+    def test_profile_cancel_edit_and_reject_remain_visible(self):
+        self.pending()
+        handlers.handle_message('synthetic-a','review profile')
+        handlers.handle_message('synthetic-a','2')
+        handlers.handle_message('synthetic-a','Evening support')
+        cancelled=handlers.handle_message('synthetic-a','2')
+        self.assertIn('Accept suggestion',cancelled)
+        rejected=handlers.handle_message('synthetic-a','3')
+        self.assertIn('Suggestion rejected',rejected)
+        self.assertIn('No profile information is saved',rejected)
+        self.assertIn('Withdraw permission',rejected)
+        self.assertEqual(self.rows('SELECT * FROM caregiver_profile_fields'), [])
+
+    def test_profile_review_service_failure_keeps_navigation_available(self):
+        import profile_navigation
+        self.pending()
+        handlers.handle_message('synthetic-a','profile')
+        with patch.object(profile_navigation,'generate_and_prepare_profile_review',side_effect=RuntimeError('private diagnostic')):
+            with self.assertLogs(profile_navigation.__name__,level='WARNING') as logs:
+                result=handlers.handle_message('synthetic-a','1')
+        self.assertIn('temporarily unavailable',result)
+        self.assertIn('3. Withdraw permission',result)
+        self.assertNotIn('private diagnostic',' '.join(logs.output))
+        self.assertEqual(analytics.get_profiling_consent('synthetic-a'),'granted')
+
+    def test_profile_numbered_decline_does_not_enable_and_hides_stale_fields(self):
+        sid=self.pending()
+        analytics.review_profile_suggestion('synthetic-a',sid,True)
+        handlers.handle_message('synthetic-a','profile')
+        handlers.handle_message('synthetic-a','2')
+        result=handlers.handle_message('synthetic-a','2')
+        self.assertIn('Disabled (declined)',result)
+        self.assertIn('No profile information is saved',result)
+        self.assertEqual(self.rows('SELECT * FROM caregiver_profile_fields'), [])
+        # Even an externally inserted stale field must not appear without current consent.
+        self.rows("INSERT INTO caregiver_profile_fields(sender,field_name,field_value) VALUES ('synthetic-a','support_needs','Stale field')")
+        self.assertNotIn('Stale field',handlers.handle_message('synthetic-a','profile'))
+
+    def test_every_ai_reply_has_actionable_navigation_without_translating_reply(self):
+        database.update_user('synthetic-a',state='ai_chat')
+        chat.ask_careconnect.return_value='Private caregiver-specific reply'
+        chat.get_matching_language_example.return_value='Malay'
+        seen=[]
+        def translate(message,*args,**kwargs):
+            seen.append(message)
+            return message
+        chat.safe_adapt_message.side_effect=translate
+        result=handlers.handle_message('synthetic-a','A normal message')
+        self.assertIn('Private caregiver-specific reply',result)
+        self.assertIn("'menu'",result)
+        self.assertIn("'profile'",result)
+        self.assertTrue(seen)
+        self.assertTrue(all('Private caregiver-specific reply' not in text for text in seen))
+
+    def test_navigation_footer_is_contextual_and_does_not_duplicate(self):
+        database.update_user('synthetic-a',state='match_pending')
+        result=handlers.add_reply_navigation('synthetic-a','Your request is pending.')
+        self.assertIn("'my status'",result)
+        self.assertIn("'menu'",result)
+        existing="Choose 1 or 2. Type 'menu' to go back."
+        self.assertEqual(handlers.add_reply_navigation('synthetic-a',existing),existing)
+        database.update_user('synthetic-a',state='language_selection')
+        language=handlers.add_reply_navigation('synthetic-a','Choose a language.')
+        self.assertIn('to continue to the main menu',language)
+        self.assertIn('language choices again',language)
+        self.assertNotIn("'my status'",language)
+
+    def test_navigation_footer_handles_invalid_translation_and_unavailable_preferences(self):
+        database.update_user('synthetic-a',state='ai_chat')
+        chat.get_matching_language_example.return_value='Tamil'
+        chat.safe_adapt_message.side_effect=lambda *args,**kwargs: 'commands were lost'
+        result=handlers.add_reply_navigation('synthetic-a','A reply')
+        self.assertIn("'menu'",result)
+        self.assertIn("'profile'",result)
+        with patch.object(handlers,'get_user',side_effect=RuntimeError('private database diagnostic')):
+            result=handlers.add_reply_navigation('synthetic-a','Please try again.')
+        self.assertIn("'menu'",result)
+        self.assertNotIn('diagnostic',result)
+
+    def test_short_profile_validation_and_cancel_prompts_have_menu_exit(self):
+        self.pending()
+        handlers.handle_message('synthetic-a','review profile')
+        handlers.handle_message('synthetic-a','2')
+        invalid=handlers.handle_message('synthetic-a','Call 91234567')
+        self.assertIn("'menu'",invalid)
+        self.assertIn('without contact details',invalid)
+        handlers.handle_message('synthetic-a','profile')
+        handlers.handle_message('synthetic-a','3')
+        retry=handlers.handle_message('synthetic-a','invalid choice')
+        self.assertIn("'menu'",retry)
+        self.assertIn('Cancel and keep my profile',retry)
 
     def test_signed_webhook_through_real_profile_handler(self):
         self.pending()

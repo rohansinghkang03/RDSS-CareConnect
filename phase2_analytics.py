@@ -440,3 +440,21 @@ def get_profiling_epoch(sender):
                 return row[0]
     finally:
         connection.close()
+
+
+def get_profile_snapshot(sender):
+    """Read only this sender's approved fields under a shared consent lock."""
+    connection = get_connection()
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT status FROM caregiver_profiling_consent WHERE sender=%s FOR SHARE', (sender,))
+                consent = cursor.fetchone()
+                status = consent[0] if consent else 'not_given'
+                fields = {}
+                if status == 'granted':
+                    cursor.execute('SELECT field_name,field_value FROM caregiver_profile_fields WHERE sender=%s', (sender,))
+                    fields = {field: value for field, value in cursor.fetchall() if field in PROFILE_FIELDS}
+                return {'consent': status, 'fields': fields}
+    finally:
+        connection.close()
