@@ -32,3 +32,7 @@ private_db_backups/
 # Local development backups
 *_before_*.py
 database_postgres_ready.py
+
+# RDSS local-only files
+phase1_backups/
+phase2_backups/

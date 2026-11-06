@@ -35,9 +35,32 @@ from database import (
     update_user
 )
 
+from phase2_analytics import (
+    get_profiling_consent,
+    grant_profiling_consent,
+    decline_profiling_consent,
+    withdraw_profiling_consent,
+    review_profile_suggestion,
+)
+
 from matching import find_matches
 
 from resources import get_resource_reply, get_resources_menu
+
+
+PROFILING_CONSENT_PROMPT = (
+    "CareConnect AI Profile 💜\n\n"
+    "With your permission, CareConnect may use your future AI Chat "
+    "messages to suggest information for your caregiver profile, "
+    "such as your caregiving situation and the support you need.\n\n"
+    "You can review, edit or reject each suggestion before it is saved. "
+    "This is optional, and you can withdraw your permission later. "
+    "Your profile will not be shared with another caregiver through "
+    "this feature.\n\n"
+    "1. Yes, enable profile suggestions\n"
+    "2. No, thanks\n\n"
+    "Type 'menu' to return to the main menu."
+)
 
 
 # Registration states are separate from the existing Find a Buddy flow.
@@ -642,6 +665,19 @@ Type 'menu' anytime to return here.
 
 
 
+def track_usage_safely(sender, event_type, category=None):
+    """Record analytics without interrupting caregiver conversations."""
+    try:
+        from phase2_analytics import record_usage_event
+        record_usage_event(sender, event_type, category)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "CareConnect analytics failed for event %s",
+            event_type,
+        )
+
+
 def caregiver_message(sender, message, required_text=None):
     """
     Adapt a fixed CareConnect system message to the caregiver's
@@ -664,6 +700,7 @@ def caregiver_message(sender, message, required_text=None):
 
 
 def show_careconnect_menu(sender):
+    track_usage_safely(sender, "main_menu_opened")
     language = get_matching_language_example(sender)
 
     if not language or language.lower() == "english":
@@ -818,6 +855,14 @@ def main_menu_clarification(sender):
     return message
 
 def handle_message(sender, text):
+    """Contain stale-review races without exposing database exception details."""
+    try:
+        return _handle_message(sender, text)
+    except (PermissionError, ValueError):
+        return "That action is no longer available. Type 'menu' and try again. 💜"
+
+
+def _handle_message(sender, text):
     user = get_user(sender)
 
     if user is None:
@@ -837,6 +882,73 @@ def handle_message(sender, text):
         admin_reply = handle_admin_message(sender, text, state)
         if admin_reply is not None:
             return admin_reply
+
+    if text == "withdraw profile consent":
+        try:
+            withdraw_profiling_consent(sender)
+        except Exception:
+            return (
+                "Sorry, we could not complete your profile consent "
+                "withdrawal right now. Please try again later. 💜"
+            )
+
+        update_user(sender, state="ai_chat")
+        return (
+            "Your permission for AI-assisted caregiver profiling "
+            "has been withdrawn. 💜\n\n"
+            "Your saved caregiver profile information, suggestions "
+            "and unfinished profile edits have been deleted.\n\n"
+            "You can continue using CareConnect AI as usual."
+        )
+
+    if state == "ai_chat" and text == "review profile":
+        from profile_suggestions import generate_and_prepare_profile_review
+
+        try:
+            result = generate_and_prepare_profile_review(sender)
+        except PermissionError:
+            return (
+                "Profile suggestions require your permission. 💜\n\n"
+                "Type 'profile' to review your consent options."
+            )
+        except Exception:
+            return (
+                "Sorry, your profile review is temporarily unavailable. 💜"
+                " Please try again later."
+            )
+
+        if result["status"] == "pending":
+            update_user(sender, state="profile_review")
+
+        return result["message"]
+
+    if state == "ai_chat" and text == "profile":
+        update_user(sender, state="profiling_consent")
+        return PROFILING_CONSENT_PROMPT
+
+    if state == "profiling_consent" and text != "menu":
+        if text == "1":
+            grant_profiling_consent(sender)
+            update_user(sender, state="ai_chat")
+            return (
+                "Your permission for AI-assisted profile suggestions has been recorded. 💜\n\n"
+                "You will be able to review suggestions before they are saved. "
+                "Type 'review profile' to review suggestions, or 'withdraw profile consent' anytime to delete your profile."
+            )
+
+        if text == "2":
+            decline_profiling_consent(sender)
+            update_user(sender, state="ai_chat")
+            return (
+                "No problem. 💜 AI profile suggestions will remain disabled.\n\n"
+                "You can continue chatting with CareConnect AI."
+            )
+
+        return (
+            "Please choose 1 to enable profile suggestions "
+            "or 2 to decline.\n\n"
+            "Type 'menu' to return to the main menu."
+        )
 
     if text.strip().lower() in ("application status", "application_status"):
         return application_status_reply(sender)
@@ -980,6 +1092,7 @@ def handle_message(sender, text):
                 sender,
                 state="ai_chat"
             )
+            track_usage_safely(sender, "ai_chat_started")
 
             message = (
                 "You're chatting with CareConnect AI. 💜\n\n"
@@ -1005,6 +1118,7 @@ def handle_message(sender, text):
                 sender,
                 state="resources_menu"
             )
+            track_usage_safely(sender, "resource_hub_opened")
 
             return caregiver_message(sender, get_resources_menu())
 
@@ -1023,14 +1137,16 @@ def handle_message(sender, text):
                 required_text="'menu'"
             )
 
+
     elif state == "ai_chat":
-        return ask_careconnect(sender, text)
+        return ask_careconnect(sender, original_text)
 
     elif state == "resources_menu":
         if text == "back":
             return caregiver_message(sender, get_resources_menu())
         if text in ("1", "2", "3", "4"):
             update_user(sender, state="resources_detail")
+            track_usage_safely(sender, "resource_category_opened", text)
             return caregiver_message(sender, get_resource_reply(text))
         return caregiver_message(sender, get_resources_menu())
 
@@ -1039,6 +1155,7 @@ def handle_message(sender, text):
             update_user(sender, state="resources_menu")
             return caregiver_message(sender, get_resources_menu())
         if text in ("1", "2", "3", "4"):
+            track_usage_safely(sender, "resource_category_opened", text)
             return caregiver_message(sender, get_resource_reply(text))
         return caregiver_message(
             sender, "Type 'back' to view resource categories or 'menu' for the main menu."
@@ -1320,6 +1437,122 @@ Type 'menu' to return to the main menu.
                 sender,
                 "You are currently matched."
             )
+
+    elif state == "profile_review":
+        from phase2_analytics import get_pending_profile_suggestion
+
+        if get_profiling_consent(sender) != "granted":
+            update_user(sender, state="ai_chat")
+            return "Profile review requires active permission. 💜"
+
+        pending = get_pending_profile_suggestion(sender)
+
+        if pending is None:
+            update_user(sender, state="ai_chat")
+            return "There is no pending profile suggestion. 💜"
+
+        if text == "1":
+            review_profile_suggestion(
+                sender, pending["id"], accept=True
+            )
+            update_user(sender, state="ai_chat")
+            return (
+                "Your suggestion has been added to your "
+                "caregiver profile. 💜"
+            )
+
+        if text == "2":
+            update_user(sender, state="profile_review_edit")
+            return (
+                "Please type the corrected profile information.\n\n"
+                "Your original suggestion will not be saved "
+                "unless you approve the edited version."
+            )
+
+        if text == "3":
+            review_profile_suggestion(
+                sender, pending["id"], accept=False
+            )
+            update_user(sender, state="ai_chat")
+            return "Suggestion rejected. Nothing was added to your profile. 💜"
+
+        from profile_suggestions import format_profile_suggestion
+        return format_profile_suggestion(
+            pending["field_name"], pending["proposed_value"]
+        )
+
+    elif state == "profile_review_edit":
+        from phase2_analytics import (
+            get_pending_profile_suggestion,
+            save_pending_profile_edit,
+        )
+        from profile_suggestions import is_safe_profile_value
+
+        if not is_safe_profile_value(original_text):
+            return (
+                "Please enter a shorter description without "
+                "contact details or identifying information."
+            )
+
+        pending = get_pending_profile_suggestion(sender)
+        if pending is None:
+            update_user(sender, state="ai_chat")
+            return "No pending suggestion is available. 💜"
+
+        try:
+            save_pending_profile_edit(
+                sender, pending["id"], original_text
+            )
+        except PermissionError:
+            update_user(sender, state="ai_chat")
+            return "Profile editing requires active permission. 💜"
+
+        update_user(sender, state="profile_review_confirm")
+        return (
+            "CareConnect AI Profile 💜\n\n"
+            "Your edited suggestion:\n"
+            + original_text.strip()
+            + "\n\nWould you like to save this exact wording?\n\n"
+            "1. Confirm and save\n"
+            "2. Cancel edit"
+        )
+
+    elif state == "profile_review_confirm":
+        from phase2_analytics import (
+            get_pending_profile_suggestion,
+            get_pending_profile_edit,
+            confirm_pending_profile_edit,
+            cancel_pending_profile_edit,
+        )
+
+        pending = get_pending_profile_suggestion(sender)
+        if pending is None:
+            update_user(sender, state="ai_chat")
+            return "No pending suggestion is available. 💜"
+
+        if text == "1":
+            confirm_pending_profile_edit(sender, pending["id"])
+            update_user(sender, state="ai_chat")
+            return "Your edited profile information has been saved. 💜"
+
+        if text == "2":
+            cancel_pending_profile_edit(sender, pending["id"])
+            update_user(sender, state="profile_review")
+            from profile_suggestions import format_profile_suggestion
+            return format_profile_suggestion(
+                pending["field_name"], pending["proposed_value"]
+            )
+
+        edited = get_pending_profile_edit(sender, pending["id"])
+        if edited is None:
+            update_user(sender, state="profile_review")
+            return "No edited draft is available. Please review again."
+
+        return (
+            "Your edited suggestion:\n"
+            + edited
+            + "\n\n1. Confirm and save\n2. Cancel edit"
+        )
 
     return caregiver_message(
         sender,

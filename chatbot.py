@@ -107,7 +107,9 @@ load_dotenv()
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=30.0,
+    max_retries=1
 )
 
 

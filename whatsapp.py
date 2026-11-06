@@ -1,27 +1,18 @@
+"""WhatsApp delivery with bounded waits and private logging."""
 import requests
-
 from config import ACCESS_TOKEN, PHONE_NUMBER_ID
-
-url = f"https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/messages"
-
-headers = {
-    "Authorization": f"Bearer {ACCESS_TOKEN}",
-    "Content-Type": "application/json"
-}
 
 
 def send_message(recipient, message):
-
-    data = {
-        "messaging_product": "whatsapp",
-        "to": recipient,
-        "type": "text",
-        "text": {
-            "body": message
-        }
-    }
-
-    response = requests.post(url, headers=headers, json=data)
-
-    print("Reply Status:", response.status_code)
-    print(response.text)
+    if not ACCESS_TOKEN or not PHONE_NUMBER_ID:
+        raise RuntimeError("WhatsApp configuration missing")
+    response = requests.post(
+        f"https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/messages",
+        headers={"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"},
+        json={"messaging_product": "whatsapp", "to": recipient,
+              "type": "text", "text": {"body": message}},
+        timeout=(5, 20),
+    )
+    if not response.ok:
+        # Never include response bodies, URLs, tokens or recipient identifiers.
+        raise RuntimeError("WhatsApp delivery failed")

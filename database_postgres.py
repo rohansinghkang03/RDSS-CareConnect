@@ -12,7 +12,8 @@ def get_connection():
     return psycopg2.connect(
         database_url,
         connect_timeout=10,
-        sslmode="require"
+        sslmode="require",
+        options="-c statement_timeout=30000 -c lock_timeout=5000 -c timezone=UTC"
     )
 
 

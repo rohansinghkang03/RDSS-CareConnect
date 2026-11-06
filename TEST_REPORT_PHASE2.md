@@ -1,0 +1,9 @@
+# Phase 2 local verification — 6 November 2026
+
+Result: **19 tests passed**, in 1.121 seconds on the final run. Six deterministic approval/draft-versus-withdrawal scenarios execute within the concurrency test. All ten changed Python files parsed successfully and `git diff --check HEAD` passed.
+
+Environment: existing project Python 3.9 virtual environment, PostgreSQL 18 supplied by Postgres.app, new isolated UTF-8 cluster at `/tmp/careconnect-phase2-audit-pg`, loopback port 55489. Tests verified the server data directory, created a unique synthetic schema and dropped it on completion. AI responses and WhatsApp transport were mocked. No live database, provider AI request, outbound WhatsApp message, Render action or deployment occurred.
+
+Coverage: direct privacy write rejection; ownership and repeat approval; edited draft confirmation; withdrawal/refusal erasure; original approval, edited approval and draft updates racing withdrawal in both orders; consent epoch/re-grant protection; post-consent user-only chat window; schema reruns, data preservation, dry-run rollback, wrong types, missing constraints and duplicate pending rows; restored conversation routes and global withdrawal; profile edit routing; AI input filtering and response storage disabled; signed webhook batches, message case, duplicate receipts and private failures; removed unauthenticated browser routes; signed webhook through real handler and database approval/withdrawal.
+
+Limitations: provider transport, model availability, clean dependency installation, target PostgreSQL major-version compatibility, production-like data restore, load, provider retry timing and crash recovery require the staging checks in DEPLOYMENT_READINESS.md. Existing Mac runtime emits an urllib3 warning about its old LibreSSL build; use a supported Python/OpenSSL runtime for release.
