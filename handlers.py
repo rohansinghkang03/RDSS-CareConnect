@@ -889,11 +889,14 @@ def select_careconnect_language(sender, answer):
         )
 
     from conversation_ai import canonical_language,save_style,take_resume_state
+    from conversation_script import response_style
     from conversation_context import current
     language=canonical_language(language) or language
     set_language_preference(sender, language)
-    save_style(sender,'standard')
-    if current.get():current.get().update(language=language,style='standard')
+    hint=answer if any(term in answer.casefold() for term in ('pinyin','romanised','romanized','english letters','latin letters','chinese characters')) else ''
+    style=response_style(language,'standard',hint)
+    save_style(sender,style)
+    if current.get():current.get().update(language=language,style=style)
     resume=take_resume_state(sender) or 'main_menu'
     if resume.startswith('admin_') or resume=='language_selection':resume='main_menu'
     update_user(sender,state=resume)
@@ -967,36 +970,46 @@ def main_menu_clarification(sender):
     return message
 
 def add_reply_navigation(sender, reply):
-    """Give every caregiver reply an exit using only fixed translated instructions."""
-    if not isinstance(reply, str):
-        reply = "Sorry, I couldn't prepare that reply. Please try again."
-    # Existing messages already describe the correct exit for their own flow.
-    import re
-    if re.search(r"['‘’\"]menu['‘’\"]", reply, re.IGNORECASE):
-        return reply
+    """Verified contextual navigation, including generated replies and error paths."""
+    from conversation_context import current
+    context=current.get()
+    if not isinstance(reply,str):reply="Sorry, I couldn't prepare that reply. Please try again."
+    has_menu=bool(re.search(r"['‘’\"]menu['‘’\"]",reply,re.I))
+    has_back=bool(re.search(r"['‘’\"]back['‘’\"]",reply,re.I))
+    if has_menu and not context:return reply
     try:
-        user = get_user(sender) or {}
-        state = user.get("state", "")
-        if state == "language_selection":
-            footer = (
-                "Choose one of the languages above, or type your preferred language, "
-                "to continue to the main menu. Type 'menu' to see the language choices again."
-            )
-        elif state in {"match_pending", "matched", "confirm_match", "buddy_unavailable", "status_menu"} or state.startswith("buddy_registration_"):
-            footer = "Type 'menu' for the main menu, or 'my status' to check your buddy request or application."
-        elif state == "ai_chat":
-            footer = "Type 'menu' for the main menu, or 'profile' to view your profile and permission settings."
-        else:
-            footer = "Type 'menu' to return to the menu."
-        translated = caregiver_message(sender, footer, required_text="'menu'")
-        # Keep commands usable even if a translator changes their spelling.
-        required = re.findall(r"'([a-z ]+)'", footer)
-        if not isinstance(translated, str) or any("'" + command + "'" not in translated for command in required):
-            translated = footer
-    except Exception:
-        # An error reply must retain an exit even when preference lookup fails.
-        translated = "Type 'menu' to return to the menu."
-    return reply.rstrip() + "\n\n" + translated
+        state=(get_user(sender) or {}).get('state','')
+        if has_menu and (has_back or state=='main_menu') and not (context and context['generated']):return reply
+        if state=='language_selection':
+            footer=("Choose one of the languages above, or type your preferred language, "
+                    "to continue to the main menu. Type 'menu' to see the language choices again. "
+                    "Type 'back' to return to your previous screen.")
+        elif state=='ai_chat':
+            footer="Type 'resources' for the Resource Hub, 'profile' for your profile and privacy settings, or 'menu' for the main menu."
+        elif state.startswith('profile_') or state=='profiling_consent':
+            footer="Type 'back' for the previous profile screen."
+            if not has_menu:footer+=" Type 'profile' for your profile, or 'menu' for the main menu."
+        elif state.startswith('buddy_registration_'):
+            footer="Type 'back' to return within your application, or 'menu' to pause. Type 'my status' to check your application."
+        elif state in {'match_pending','matched','buddy_unavailable'}:
+            footer="Type 'back' or 'menu' for the main menu, or 'my status' to check your buddy request or application."
+        elif state in {'resources_menu','status_menu'}:
+            footer="Type 'back' or 'menu' for the main menu."
+        elif state in {'ai_onboarding','ai_onboarding_confirm','confirm_match'}:
+            footer="Type 'back' to return to the previous screen, 'my status' to check a request, or 'menu' for the main menu."
+        elif state.startswith('admin_'):
+            footer="Type 'back' or 'menu' for the admin menu. Type 'admin logout' to sign out."
+        else:footer="Type 'menu' to return to the menu."
+        translated=caregiver_message(sender,footer,required_text="'menu'" if "'menu'" in footer else None)
+        if context and context['fixed_localized']:
+            from profile_localization import malay_profile_template
+            fixed=malay_profile_template(footer)
+            if fixed is not None:translated=fixed
+            else:context['fixed_localized']=False
+        required=re.findall(r"'([a-z ]+)'",footer)
+        if not isinstance(translated,str) or any("'"+command+"'" not in translated for command in required):translated=footer
+    except Exception:translated="Type 'menu' to return to the menu."
+    return reply.rstrip()+'\n\n'+translated
 
 
 def handle_message(sender, text):
@@ -1009,7 +1022,7 @@ def handle_message(sender, text):
     if user is None:
         create_user(sender);user=get_user(sender)
     language=canonical_language(get_matching_language_example(sender)) or ''
-    with conversation(language,get_style(sender)):
+    with conversation(language,get_style(sender,language)):
         try:
             routed,reply=prepare(sender,text,user)
             if reply is None:reply=_handle_message(sender,routed)
@@ -1270,13 +1283,16 @@ def _handle_message(sender, text):
 
     elif state == "ai_chat":
         reply=ask_careconnect(sender, original_text)
+        from conversation_context import generated
+        generated()
         if not reply.startswith('Sorry, CareConnect AI is temporarily unavailable.'):
             protect(reply)
         return reply
 
     elif state == "resources_menu":
         if text == "back":
-            return caregiver_message(sender, get_resources_menu())
+            update_user(sender,state='main_menu')
+            return show_careconnect_menu(sender)
         if text in ("1", "2", "3", "4"):
             update_user(sender, state="resources_detail")
             track_usage_safely(sender, "resource_category_opened", text)

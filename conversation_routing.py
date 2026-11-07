@@ -1,7 +1,9 @@
 """AI assists navigation; handlers retain all validation, consent and ownership checks."""
 import re
+import unicodedata
 from conversation_context import current,protect
 import conversation_ai as ai
+from conversation_script import response_style
 
 OPTIONS={
  'main_menu':{'1':'Find a Support Buddy','2':'Talk to CareConnect AI','3':'Explore resources','4':'Become a Support Buddy','5':'Contact RDSS','6':'My profile and privacy','7':'Request/application status','8':'Change language'},
@@ -34,11 +36,24 @@ EXPLICIT_CHOICES={
 }
 COMMANDS={'menu','profile','my profile','my status','status','application status','application_status',
           'requests','review profile','withdraw profile consent','back','cancel','hi','hello','hey','start'}
+DIRECT_DESTINATIONS={'resources':'3','resource hub':'3','ai chat':'2','find a buddy':'1',
+                     'become a buddy':'4','contact rdss':'5'}
 
 def private_field(state):
     return state in {'profile_review_edit','buddy_registration_name','buddy_registration_display_name',
         'buddy_registration_introduction','buddy_registration_edit_name','buddy_registration_edit_display_name',
         'buddy_registration_edit_introduction'}
+
+def private_navigation(command):
+    """Recognise clear UI questions locally, without sending private form values to AI."""
+    text=command.strip(' .?!。？！')
+    if re.fullmatch(r'(?:how (?:do|can) i|how to|can you|could you)(?: please)? (?:go to|get to|open|access|show)(?: me)?(?: the)? (?:resources|resource hub)',text):return 'resources','English'
+    if re.fullmatch(r'(?:macam mana nak|boleh|nak) (?:pergi|buka|tengok)(?: ke)? (?:resources|resource hub|sumber|pusat sumber)',text):return 'resources','Malay'
+    if (re.fullmatch(r'(?:怎么|怎麼|如何)(?:去|进入|進入|打开|打開|查看)(?:资源|資源)(?:中心|页面|頁面)?(?:呢|啊|呀|啦|咯)?',text)
+        or re.fullmatch(r'(?:资源|資源)(?:中心)?(?:在哪里|在哪裡|在哪)(?:呢|啊|呀)?',text)):
+        return 'resources','Traditional Chinese' if '資' in text else 'Simplified Chinese'
+    if text=='வளங்கள் பக்கத்துக்கு எப்படி போவது':return 'resources','Tamil'
+    return None
 
 def options_for(state):
     from handlers import REGISTRATION_OPTIONS,REGISTRATION_FIELDS
@@ -51,6 +66,7 @@ def current_screen(sender,state):
     import profile_navigation as p
     from database import get_support_buddy_draft
     if state=='main_menu':return h.show_careconnect_menu(sender)
+    if state=='language_selection':return h.LANGUAGE_SELECTION_MESSAGE
     if state=='profile_menu':return p.show_profile(sender)
     if state=='profiling_consent':return h.PROFILING_CONSENT_PROMPT
     if state in {'profile_review','profile_review_confirm'}:
@@ -77,11 +93,45 @@ def current_screen(sender,state):
         if step in h.REGISTRATION_QUESTIONS:return h.registration_prompt(step)
     options=options_for(state)
     if options:return '\n'.join(key+'. '+value for key,value in options.items())+"\n\nType 'menu' for the main menu."
-    if state=='ai_chat':return "You can keep chatting with CareConnect AI here. Type 'profile' for your profile, or 'menu' for the main menu."
+    if state=='ai_chat':return "You can keep chatting with CareConnect AI here. Type 'resources' for the Resource Hub, 'profile' for your profile, or 'menu' for the main menu."
     if state=='ai_onboarding':
         user=h.get_user(sender)
         return 'Tell me '+('when you would be comfortable chatting.' if user.get('support_type') else 'what kind of support you would like from another caregiver.')+"\n\nType 'menu' for the main menu."
     return "Your current progress is unchanged. Type 'my status' to check a request/application, or 'menu' for the main menu."
+
+def go_back(sender,state):
+    import handlers as h
+    if state=='language_selection':
+        previous=ai.take_resume_state(sender) or 'main_menu'
+        if previous.startswith('admin_'):previous='main_menu'
+        h.update_user(sender,state=previous)
+        return current_screen(sender,previous)
+    if state in {'profile_review_edit','profile_review_confirm'}:
+        h.update_user(sender,state='profile_review')
+        return current_screen(sender,'profile_review')
+    if state.startswith('profile_') or state=='profiling_consent':
+        if state=='profile_menu':
+            h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
+        return current_screen(sender,'profile_menu')
+    if state.startswith('buddy_registration_'):
+        if state in {'buddy_registration_consent','buddy_registration_edit'} or state.startswith('buddy_registration_edit_'):
+            return h.registration_destination(sender,'review')
+        draft=h.get_support_buddy_draft(sender)
+        if not draft:
+            h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
+        if state in {'buddy_registration_cancel','buddy_registration_draft_saved'}:
+            return h.registration_destination(sender,h.next_registration_step(draft))
+        steps=[item[0] for item in h.REGISTRATION_FIELDS]
+        step=state.removeprefix('buddy_registration_')
+        if step=='review':return h.registration_destination(sender,steps[-1])
+        if step in steps and steps.index(step)>0:return h.registration_destination(sender,steps[steps.index(step)-1])
+        h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
+    if state=='resources_detail':
+        h.update_user(sender,state='resources_menu');return h.get_resources_menu()
+    if state in {'ai_onboarding_confirm','confirm_match'}:
+        previous='ai_onboarding' if state=='ai_onboarding_confirm' else 'ai_onboarding_confirm'
+        h.update_user(sender,state=previous);return current_screen(sender,previous)
+    h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
 
 def prepare(sender,text,user):
     """Return (handler input, optional fixed reply). No inferred privileged actions."""
@@ -90,24 +140,51 @@ def prepare(sender,text,user):
     if state.startswith('admin_') or command=='admin login':
         # Never send PINs, admin notes, private application records or report inputs to AI.
         if context:context.update(language='English',style='standard')
+        if command=='back':return 'menu',None
         if state=='admin_menu':
             command={'reports':'4','statistics':'4','download report':'4','applications':'1','summary':'2','logout':'3'}.get(command,command)
             return command,None
         return text,None
+    if not private_field(state):
+        normalized=unicodedata.normalize('NFKC',text).strip().replace('،',',').replace('、',',')
+        if re.fullmatch(r'[\d,\s.。]+',normalized):
+            text=''.join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in normalized)
+            text=re.sub(r'^(\d+)[.。]$',r'\1',text);command=text.casefold()
     free=private_field(state) or state.startswith('buddy_registration_')
     explicit=ai.explicit_language(text,free_text=free)
     if explicit and state!='language_selection':
         h.set_language_preference(sender,explicit)
         style='singlish' if command=='singlish' else 'casual-mixed' if 'singlish malay' in command else 'standard'
+        hint=text if any(term in command for term in ('pinyin','romanised','romanized','english letters','latin letters','chinese characters','汉字','漢字')) else ''
+        style=response_style(explicit,style,hint)
         ai.save_style(sender,style)
         context.update(language=explicit,style=style)
         return text,'Language updated. Your current progress is unchanged.\n\n'+current_screen(sender,state)
     if command=='language' and state!='language_selection':
         ai.resume_language_screen(sender,state)
         return text,None
+    if command=='back':return text,go_back(sender,state)
+    if command=='help':return text,current_screen(sender,state)
+    if command in DIRECT_DESTINATIONS:
+        if command=='ai chat' and state=='ai_chat':return text,current_screen(sender,state)
+        h.update_user(sender,state='main_menu')
+        return DIRECT_DESTINATIONS[command],None
     # Numbers/known commands never depend on an AI request succeeding.
     if state=='language_selection' or command in COMMANDS or re.fullmatch(r'[\d,\s]+',command) or re.fullmatch(r'(?:requests|request|accept|decline) \d+',command):return text,None
-    if private_field(state):return text,None
+    if private_field(state):
+        destination=private_navigation(command)
+        if destination:
+            key,language=destination
+            h.set_language_preference(sender,language);ai.save_style(sender,'standard')
+            context.update(language=language,style='standard')
+            h.update_user(sender,state='main_menu')
+            return DIRECT_DESTINATIONS[key],None
+        if command.strip(' .?!。？！') in {'这是什么意思','這是什麼意思','什么意思','什麼意思','apa maksud ni','apa maksud ini','boleh explain','இதற்கு என்ன அர்த்தம்'}:
+            return text,current_screen(sender,state)
+        if re.match(r'^(?:how (?:do|can|to)|where (?:do|can|is)|can you|could you|what does)\b',command):
+            return text,("Your answer has not been saved. You can type 'resources' to open the Resource Hub, "
+                         "'profile' for your profile, 'back' for the previous screen or 'menu' for the main menu.\n\n"+current_screen(sender,state))
+        return text,None
     if command in EXPLICIT_CHOICES.get(state,{}):return EXPLICIT_CHOICES[state][command],None
     # Literal confirmations are safe only in the screen that actually asks them.
     if state in SENSITIVE and command in {'yes','no','ya','tidak','ஆம்','இல்லை','是','否'}:
@@ -120,8 +197,11 @@ def prepare(sender,text,user):
     if result is None:return text,None
     registration_language=state in {'buddy_registration_languages','buddy_registration_edit_languages'}
     if result['language'] and not registration_language:
-        h.set_language_preference(sender,result['language']);ai.save_style(sender,result['style'])
-        context.update(language=result['language'],style=result['style'])
+        hint=text
+        if result['explicit_language_switch'] and not any(term in command for term in ('pinyin','romanised','romanized','english letters','latin letters','chinese characters','汉字','漢字')):hint=''
+        style=response_style(result['language'],result['style'],hint)
+        h.set_language_preference(sender,result['language']);ai.save_style(sender,style)
+        context.update(language=result['language'],style=style)
     if result['explicit_language_switch'] and not registration_language and result['language']:
         return text,'Language updated. Your current progress is unchanged.\n\n'+current_screen(sender,state)
     if result['action']=='urgent' and result['route_confident']:
@@ -139,10 +219,7 @@ def prepare(sender,text,user):
     action=result['action'];choices=result['choices']
     if action=='help':return text,'Here is what you can do on this screen. No changes have been made.\n\n'+current_screen(sender,state)
     if action=='back':
-        if state.startswith('profile_') or state=='profiling_consent':return 'profile',None
-        if state.startswith('resources_'):return 'back',None
-        if state.startswith('buddy_registration_'):return text,h.registration_destination(sender,'review')
-        return 'menu',None
+        return text,go_back(sender,state)
     if action=='cancel':
         # Cancellation of a destructive action means keep data; never delete on inference.
         if state in {'profile_withdraw_confirm','profile_review_confirm','buddy_registration_cancel'}:return '2',None

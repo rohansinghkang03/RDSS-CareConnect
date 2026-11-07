@@ -24,9 +24,11 @@ def render_reply(sender,reply):
     except Exception:translated=template
     finally:context['defer']=True
     original_options=re.findall(r'^\s*(\d+)\.',template,re.M)
+    from conversation_script import script_ok
     if (not isinstance(translated,str) or not translated.strip()
         or any(translated.count(key)!=1 for key in values)
-        or re.findall(r'^\s*(\d+)\.',translated,re.M)!=original_options):translated=template
+        or re.findall(r'^\s*(\d+)\.',translated,re.M)!=original_options
+        or not script_ok(translated,context['language'],context['style'])):translated=template
     if values:
         translated=re.sub('|'.join(re.escape(k) for k in values),lambda m:values[m[0]],translated)
     return translated

@@ -3,6 +3,7 @@ import re
 
 MALAY_LANGUAGES = {'malay', 'bahasa melayu', 'bahasa malaysia'}
 MALAY_PROFILE_LINES = {
+    "Type 'back' for the previous profile screen.": "Taip 'back' untuk kembali ke skrin profil sebelumnya.",
     'My caregiver profile 💜': 'Profil penjaga saya 💜',
     'Profile suggestions: Enabled': 'Cadangan profil: Diaktifkan',
     'Profile suggestions: Disabled (declined)': 'Cadangan profil: Dilumpuhkan (tidak dipersetujui)',

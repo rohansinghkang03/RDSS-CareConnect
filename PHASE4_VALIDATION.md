@@ -65,3 +65,33 @@ an installation before the optional communication preferences table exists.
 129 automated regression checks cover Phases 2–4, including routing, consent races, report generation, retention and the new language workflows. Real-model checks used 20 fictional routing inputs plus chat/translation examples in English/Singlish, Malay-English, Chinese and Tamil. Ordinary chat is not swallowed by same-screen routing; immediate-danger wording reaches the fixed safety message. Model classifications can still vary: an instruction-bypass example returned help in one run and no validated decision in another; both paths preserve consent and leave application writes under explicit handler control. No WhatsApp messages or hosted synthetic records were created by these AI checks. Native-language user acceptance remains necessary; test evidence is not a guarantee for every possible utterance.
 
 AI requests within one message share a 24-second wall-clock budget, including routing, extraction and translation. A depleted budget prevents another provider call; existing fixed menus/fallbacks remain available. This reduces the risk of a sequence of individually slow calls overrunning the default web worker timeout. Database/network outages can still delay service, and real user latency must be assessed in WhatsApp.
+
+## Readability and navigation follow-up
+
+145 regression tests pass, including 88 screen/language navigation combinations,
+parent-screen back behaviour, direct resource commands from 20 caregiver states,
+romanised Chinese/Tamil/Hokkien, exact private wording and script-repair safeguards.
+Real-model fictional samples produced readable conversational Simplified/Traditional
+Chinese, Chinese-English, pinyin, Latin-letter Hokkien, Malay-English and Tamil in
+both scripts; resource navigation questions worked in English, Chinese and Hokkien.
+These checks establish script/readability and controlled navigation, not native
+fluency or perfect interpretation of every dialect phrase. User language acceptance
+remains pending.
+
+Hokkien/Teochew default to romanised spelling when no writing preference exists.
+Latin-letter transliteration stays Latin; explicit Chinese characters can be requested.
+Generated replies reject replacement/private-use glyphs, unexpected scripts and rare
+CJK extensions. One bounded repair is attempted before a readable clarification.
+Exact saved caregiver wording remains unchanged, even if it uses another script.
+
+Verified navigation is appended to generated AI replies as well as fixed/error
+screens. Literal resources, profile, my status, ai chat, help, back and menu commands
+do not depend on AI classification (except admin PINs remain literal credentials).
+Resource-detail back returns to categories; category-root back returns to the main
+menu. Profile-edit back does not save the word back as data. Application back moves
+within the draft without deleting answers. Clear navigation questions in private
+fields are handled locally without transmitting those field values to AI.
+
+The requested match-to-chat button is queued separately, per the user's instruction
+to finish translation first. No peer chat/contact-sharing feature is added by this
+release; consent/ownership safeguards and existing matching behaviour are preserved.

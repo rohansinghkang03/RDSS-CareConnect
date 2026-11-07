@@ -285,6 +285,121 @@ class Phase4Tests(unittest.TestCase):
         self.assertIn('dibatalkan',reply)
         self.assertEqual(base.analytics.get_profiling_consent('synthetic-a'),'granted')
 
+    def test_direct_resource_fallback_works_from_every_caregiver_screen(self):
+        self.pending()
+        for state in ['main_menu','ai_chat','profile_menu','profiling_consent','profile_review',
+                      'profile_review_edit','profile_review_confirm','profile_withdraw_confirm',
+                      'status_menu','resources_menu','resources_detail','ai_onboarding','ai_onboarding_confirm',
+                      'confirm_match','match_pending','matched','buddy_unavailable',
+                      'buddy_registration_name','buddy_registration_languages','buddy_registration_consent']:
+            with self.subTest(state=state):
+                base.database.update_user('synthetic-a',state=state)
+                result=base.handlers.handle_message('synthetic-a','resources')
+                self.assertEqual(base.database.get_user('synthetic-a')['state'],'resources_menu')
+                self.assertIn("'back'",result);self.assertIn("'menu'",result)
+        self.classifier.assert_not_called()
+
+    def test_resource_back_moves_up_one_level_and_root_returns_to_main(self):
+        base.database.update_user('synthetic-a',state='resources_detail')
+        base.handlers.handle_message('synthetic-a','back')
+        self.assertEqual(base.database.get_user('synthetic-a')['state'],'resources_menu')
+        base.handlers.handle_message('synthetic-a','back')
+        self.assertEqual(base.database.get_user('synthetic-a')['state'],'main_menu')
+
+    def test_profile_back_never_becomes_saved_edit_or_withdrawal(self):
+        sid=self.pending()
+        for state,expected in [('profile_review_edit','profile_review'),('profile_review_confirm','profile_review'),
+                               ('profile_withdraw_confirm','profile_menu'),('profile_menu','main_menu')]:
+            base.database.update_user('synthetic-a',state=state)
+            base.handlers.handle_message('synthetic-a','back')
+            self.assertEqual(base.database.get_user('synthetic-a')['state'],expected)
+        self.assertIsNone(base.analytics.get_pending_profile_edit('synthetic-a',sid))
+        self.assertEqual(base.analytics.get_profiling_consent('synthetic-a'),'granted')
+
+    def test_registration_back_preserves_answers_and_returns_to_prior_question(self):
+        base.database.start_support_buddy_draft('synthetic-a')
+        base.database.update_support_buddy_draft('synthetic-a',full_name='Fictional Name',rdss_member='Yes')
+        base.database.update_user('synthetic-a',state='buddy_registration_languages')
+        base.handlers.handle_message('synthetic-a','back')
+        self.assertEqual(base.database.get_user('synthetic-a')['state'],'buddy_registration_display_name')
+        self.assertEqual(base.database.get_support_buddy_draft('synthetic-a')['full_name'],'Fictional Name')
+
+    def test_generated_reply_containing_menu_still_gets_verified_navigation(self):
+        base.database.update_user('synthetic-a',state='ai_chat')
+        base.chat.ask_careconnect.return_value="A reply mentioning 'menu' in passing."
+        reply=base.handlers.handle_message('synthetic-a','ordinary message')
+        self.assertIn("'resources'",reply);self.assertIn("'profile'",reply)
+
+    def test_hokkien_defaults_to_readable_romanisation_across_menu_and_digits(self):
+        base.database.update_user('synthetic-a',state='profile_menu')
+        base.handlers.handle_message('synthetic-a','Hokkien')
+        self.assertEqual(base.database.get_language_preference('synthetic-a'),'Hokkien')
+        self.assertEqual(ai.get_style('synthetic-a'),'romanised')
+        base.handlers.handle_message('synthetic-a','2')
+        self.assertEqual(ai.get_style('synthetic-a'),'romanised')
+        base.handlers.handle_message('synthetic-a','Chinese')
+        self.assertEqual(ai.get_style('synthetic-a'),'standard')
+
+    def test_legacy_hokkien_without_style_defaults_to_romanised_but_explicit_han_is_preserved(self):
+        base.database.set_language_preference('synthetic-a','Hokkien')
+        self.assertEqual(ai.get_style('synthetic-a','Hokkien'),'romanised')
+        ai.save_style('synthetic-a','standard')
+        self.assertEqual(ai.get_style('synthetic-a','Hokkien'),'standard')
+
+    def test_romanised_chinese_and_tamil_style_is_inferred_without_dialect_labels(self):
+        for language,message in [('Mandarin Chinese','wo jintian hen lei'),('Tamil','naan romba tired ah irukken')]:
+            base.database.update_user('synthetic-a',state='ai_chat')
+            self.classifier.return_value=decision('none',language=[language],style='casual')
+            base.handlers.handle_message('synthetic-a',message)
+            self.assertEqual(ai.get_style('synthetic-a'),'romanised')
+            self.assertEqual(base.database.get_language_preference('synthetic-a'),language)
+
+    def test_navigation_question_in_profile_edit_is_not_saved_as_profile_text(self):
+        sid=self.pending();base.database.update_user('synthetic-a',state='profile_review_edit')
+        reply=base.handlers.handle_message('synthetic-a','how do I go to resources?')
+        self.assertEqual(base.database.get_user('synthetic-a')['state'],'resources_menu')
+        self.assertIn("'back'",reply)
+        self.assertIsNone(base.analytics.get_pending_profile_edit('synthetic-a',sid))
+        self.classifier.assert_not_called()
+
+    def test_multilingual_navigation_questions_in_private_edits_never_save_as_profile(self):
+        sid=self.pending()
+        for text in ['怎么去资源中心？','怎麼去資源中心？','macam mana nak buka sumber?','வளங்கள் பக்கத்துக்கு எப்படி போவது?']:
+            base.database.update_user('synthetic-a',state='profile_review_edit')
+            base.handlers.handle_message('synthetic-a',text)
+            self.assertEqual(base.database.get_user('synthetic-a')['state'],'resources_menu')
+            self.assertIsNone(base.analytics.get_pending_profile_edit('synthetic-a',sid))
+        self.classifier.assert_not_called()
+
+    def test_fullwidth_and_local_digits_work_as_numbers_but_edits_stay_exact(self):
+        base.database.update_user('synthetic-a',state='main_menu')
+        base.handlers.handle_message('synthetic-a','６')
+        self.assertEqual(base.database.get_user('synthetic-a')['state'],'profile_menu')
+        base.handlers.handle_message('synthetic-a','٥')
+        self.assertEqual(base.database.get_user('synthetic-a')['state'],'ai_chat')
+        sid=self.pending();base.database.update_user('synthetic-a',state='profile_review_edit')
+        base.handlers.handle_message('synthetic-a','Ｅｖｅｎｉｎｇ ｓｕｐｐｏｒｔ')
+        self.assertEqual(base.analytics.get_pending_profile_edit('synthetic-a',sid),'Ｅｖｅｎｉｎｇ ｓｕｐｐｏｒｔ')
+
+    def test_every_screen_has_working_navigation_in_english_chinese_malay_and_tamil(self):
+        self.pending()
+        states=['main_menu','profile_menu','profiling_consent','profile_review','profile_review_edit',
+                'profile_review_confirm','profile_withdraw_confirm','resources_menu','resources_detail',
+                'status_menu','ai_chat','ai_onboarding','ai_onboarding_confirm','confirm_match',
+                'match_pending','matched','buddy_unavailable','buddy_registration_languages',
+                'buddy_registration_review','buddy_registration_consent','buddy_registration_cancel','language_selection']
+        base.database.start_support_buddy_draft('synthetic-a')
+        for language in ['English','Mandarin Chinese','Malay','Tamil']:
+            for state in states:
+                with self.subTest(language=language,state=state):
+                    base.database.set_language_preference('synthetic-a',language)
+                    base.database.update_user('synthetic-a',state=state)
+                    reply=base.handlers.handle_message('synthetic-a','help')
+                    self.assertIn("'menu'",reply)
+                    # Test the advertised universal destination, not just presence of text.
+                    base.handlers.handle_message('synthetic-a','menu')
+                    self.assertEqual(base.database.get_user('synthetic-a')['state'],'main_menu')
+
 class Phase4AIContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -337,3 +452,35 @@ class Phase4AIContractTests(unittest.TestCase):
             context['deadline']=0
             with self.assertRaises(TimeoutError):tracking.feature_call('Translation',Mock(),model='synthetic')
             tracked.assert_not_called()
+
+    def test_readability_guard_rejects_unexpected_scripts_and_broken_glyphs(self):
+        from conversation_script import script_ok
+        for value in ['\ufffd','\ue000','𠮷','漢字','தமிழ்','wa bo\u0301']:
+            self.assertFalse(script_ok(value,'Hokkien','romanised'),repr(value))
+        for value in ['Wa jin sian lah.',"Type 'menu' or 'resources'. 💜"]:
+            self.assertTrue(script_ok(value,'Hokkien','romanised'))
+        self.assertTrue(script_ok('今天真的很累 lah。','Simplified Chinese','casual-mixed'))
+        self.assertTrue(script_ok('இன்று சோர்வாக இருக்கிறது.','Tamil','standard'))
+        self.assertFalse(script_ok('今日は疲れた','Mandarin Chinese','standard'))
+
+    def test_bad_script_is_repaired_before_saving_assistant_history(self):
+        with conversation('Hokkien','romanised'),patch.object(self.real,'save_conversation_message') as save,patch.object(self.real,'get_recent_conversation',return_value=[{'role':'user','content':'Wa jin sian lah'}]),patch.object(self.real.client.responses,'create',side_effect=[SimpleNamespace(output_text='𠮷 漢字'),SimpleNamespace(output_text='Wa hear you, jin sian hor.')]):
+            reply=self.real.ask_careconnect('synthetic-a','Wa jin sian lah')
+            self.assertEqual(reply,'Wa hear you, jin sian hor.')
+            self.assertNotIn('𠮷',str(save.call_args_list))
+
+    def test_failed_script_repair_uses_readable_clarification(self):
+        from conversation_script import script_ok
+        with conversation('Hokkien','romanised'),patch.object(self.real.client.responses,'create',return_value=SimpleNamespace(output_text='𠮷 漢字')):
+            reply=self.real.readable_generated_reply('𠮷 漢字')
+        self.assertTrue(script_ok(reply,'Hokkien','romanised'))
+        self.assertIn("'English'",reply)
+
+    def test_translation_script_guard_preserves_saved_foreign_text_without_transmitting_it(self):
+        with conversation('Hokkien','romanised'):
+            protect('需要情绪支持')
+            with patch.object(base.chat,'safe_adapt_message',side_effect=lambda *a,**k:'𠮷 漢字'):
+                result=render_reply('synthetic-a',"Saved: 需要情绪支持\n1. Review\nType 'menu'.")
+        self.assertIn('需要情绪支持',result)
+        self.assertIn('1. Review',result)
+        self.assertNotIn('𠮷',result)

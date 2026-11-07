@@ -130,6 +130,14 @@ YOUR ROLE
 - Respond naturally, warmly and respectfully.
 - Help caregivers express what they are experiencing.
 - Provide general emotional support.
+- Help with CareConnect navigation when asked. Valid direct commands are 'menu',
+  'resources', 'profile', 'my status', 'application status', 'requests', 'ai chat',
+  'language', 'back' and 'help'. Explain the relevant command as a fallback:
+  for example, "You can also type 'resources' to open the Resource Hub."
+- Never invent a screen, command or menu number. Do not claim you opened a screen,
+  saved information or sent something; application code performs those actions.
+- The application appends verified navigation to your reply. Do not invent an
+  alternative footer or omit requested help merely because a footer exists.
 - Encourage human connection and RDSS support when useful.
 - Be supportive without pretending to be a human.
 - Never claim to be a professional counsellor or therapist.
@@ -210,6 +218,8 @@ CONVERSATIONAL BEHAVIOUR
 CAREGIVER SUPPORT
 
 - Acknowledge feelings without making assumptions.
+- Do not infer that someone is the sole caregiver, cannot sleep, has been doing
+  this for years, or lacks help merely because they say they are tired.
 - Offer practical suggestions when appropriate.
 - Encourage human connection where useful.
 - Do not pressure caregivers to share personal information.
@@ -253,7 +263,24 @@ def communication_instructions():
     from conversation_context import current,target
     context=current.get()
     if not context or not context['language']:return ''
-    return '\nEstablished response language and style: '+target()+'. Preserve this on short/neutral replies. Match the latest substantive message when it clearly changes language.\n'
+    from conversation_script import writing_instructions
+    return ('\nEstablished response language and style: '+target()+'. Preserve this on short/neutral replies. Match the latest substantive message when it clearly changes language.\n'
+            +writing_instructions(context['language'],context['style']))
+
+def readable_generated_reply(reply,feature='AI Chat'):
+    from conversation_context import current
+    from conversation_script import script_ok
+    context=current.get()
+    if not context or script_ok(reply,context['language'],context['style']):return reply
+    try:
+        response=feature_call(feature,client.responses.create,model=MODEL,store=False,
+            instructions=CARECONNECT_INSTRUCTIONS+communication_instructions()+'\nRewrite only the supplied assistant reply in the requested writing system. Preserve its meaning; add no facts. Return only the corrected reply.',
+            input=json.dumps({'assistant_reply':reply},ensure_ascii=False))
+        repaired=response.output_text
+        if isinstance(repaired,str) and repaired.strip() and script_ok(repaired,context['language'],context['style']):return repaired.strip()
+    except Exception:pass
+    return ("I couldn't write that clearly. Please type 'English', 'Chinese', 'Malay' or 'Tamil', "
+            "or tell me which writing style you prefer. Type 'menu' for the main menu.")
 
 
 def ask_careconnect(sender, message):
@@ -279,6 +306,7 @@ def ask_careconnect(sender, message):
         reply = response.output_text
         if not isinstance(reply,str) or not reply.strip():
             raise ValueError('Empty AI reply')
+        reply=readable_generated_reply(reply)
 
         save_conversation_message(
             sender,
@@ -470,7 +498,7 @@ The application handles confirmation separately.
         reply = response.output_text.strip()
 
         if reply:
-            return reply
+            return readable_generated_reply(reply,'Matching onboarding')
 
     except Exception as error:
         print("Onboarding reply error:", type(error).__name__)
@@ -576,6 +604,10 @@ Return ONLY the adapted interface text. If unable, return the source unchanged.
 """
     from conversation_context import target
     caregiver_message=target(caregiver_message)
+    from conversation_context import current
+    from conversation_script import writing_instructions
+    turn=current.get()
+    instructions+='\n'+writing_instructions(turn['language'] if turn else caregiver_message,turn['style'] if turn else 'standard')
 
     context = (
         "Caregiver's language example:\n"
@@ -616,6 +648,9 @@ def safe_adapt_message(message, caregiver_message, required_text=None):
     adapted = adapt_message_language(message, caregiver_message)
 
     if not adapted:
+        return message
+    from conversation_script import script_ok
+    if context and not script_ok(adapted,context['language'],context['style']):
         return message
 
     if required_text and required_text not in adapted:

@@ -26,7 +26,8 @@ def target(fallback=''):
     context=current.get()
     if not context:return fallback
     label=context['language'] or fallback
-    return label+({'standard':'','casual':'; natural casual wording',
+    result=label+({'standard':'','casual':'; natural casual wording',
         'singlish':'; natural Singaporean Singlish',
-        'casual-mixed':'; natural informal code-switching, Singaporean Malay and English when selected',
+        'casual-mixed':'; natural informal code-switching between only the selected languages',
         'romanised':'; romanised writing, matching the selected language'}.get(context['style'],''))
+    return result

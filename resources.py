@@ -16,7 +16,7 @@ What would you like help with?
 
 Select a number to explore a category.
 
-Type 'menu' anytime to return to the main menu.
+Type 'back' or 'menu' to return to the main menu.
 """
 
 
