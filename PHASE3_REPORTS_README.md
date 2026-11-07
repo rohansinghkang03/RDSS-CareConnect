@@ -56,6 +56,10 @@ The helper uses three calendar years from each record's event/creation timestamp
 
 This helper does not invent expiry dates for legacy users, erase operational buddy applications/requests, delete backups, or remove administrator-downloaded copies. RDSS must confirm the retention/renewal clock for continuing buddy membership and operational records before automating their removal. Run approved maintenance regularly; changing a workbook cell does not change server retention. No retention deletion was applied to the hosted database during development.
 
+Automatic maintenance: set `RETENTION_ENABLED=true` on the existing web service. Each service request wakes a non-blocking cleanup check, throttled locally to once per five minutes. A database advisory lock and the durable `reporting_settings.retention_last_success` timestamp ensure a successful sweep runs at most once every 24 hours across workers/restarts. All scoped deletes and the success marker commit together; failures roll back and retry on later activity. Logs contain per-table counts only. Disable the environment flag to stop automatic sweeps; manual preview/apply remains available.
+
+This is activity-triggered automatic maintenance, not an independent clock scheduler. On a sleeping Free Render service no code executes: an overdue sweep catches up when the next request wakes it. No new paid service is required. Exact daily execution during complete inactivity requires an independent scheduler. The same exclusions above apply; this is not a claim that every record/copy in the organisation expires automatically.
+
 ## Agreed WhatsApp reconciliation sequence
 
 The fixture loader refuses to write unless the operator explicitly sets `CARECONNECT_TEST_DATABASE=true` for the authorised target. It never calls OpenAI or WhatsApp. Synthetic senders are visibly labelled and are not real phone numbers. Use a test service/database without caregiver traffic while these records exist.

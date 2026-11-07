@@ -42,3 +42,6 @@ Independent native-engine checks passed for current 30 days, preceding 30 days, 
 5. Review RDSS notices, operational retention scopes, file-copy handling and verified billing rates before broader administrator use.
 
 This is evidence of local correctness, not a guarantee of zero defects or hosted delivery. The existing Python 3.9 environment emits an old LibreSSL warning; the test run passed, but the deployed Python/TLS runtime should remain supported and maintained.
+# Automatic retention follow-up — 8 November 2026
+
+94 isolated PostgreSQL tests pass (the existing 90 plus automatic expiry/preservation, atomic rollback, cross-worker lock/restart catch-up, and disabled/retry behaviour). Three calendar years remain fixed in code; all twelve existing retention scopes are used. Background checks are opt-in with RETENTION_ENABLED=true and do not block WhatsApp requests. A durable success timestamp prevents repeated daily sweeps. No new database or paid scheduler is introduced. Free-service sleep delays cleanup until subsequent traffic; operational accounts/applications/requests and external copies remain excluded.

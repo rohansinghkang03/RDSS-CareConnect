@@ -103,6 +103,8 @@ def resume_reports():
     # Lazy start avoids database access or threads during module import/preload.
     from reporting_jobs import wake_worker
     wake_worker()
+    from retention import wake_cleanup
+    wake_cleanup()
 
 
 @app.get('/')

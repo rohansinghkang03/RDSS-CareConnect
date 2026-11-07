@@ -386,6 +386,52 @@ class Phase3Tests(unittest.TestCase):
         with patch.object(phase3_manage,'get_connection',base.connect),patch('builtins.print'),patch('sys.argv',['phase3_manage.py','retention','--apply']):phase3_manage.main()
         self.assertEqual(self.rows('SELECT message_hash FROM whatsapp_receipts'),[('recent',)])
 
+    def test_automatic_retention_expires_records_once_and_preserves_accounts(self):
+        import retention
+        self.rows("DELETE FROM reporting_settings WHERE key='retention_last_success'")
+        self.rows("INSERT INTO whatsapp_receipts(message_hash,status,received_at) VALUES('old','completed',CURRENT_TIMESTAMP-INTERVAL '3 years'-INTERVAL '1 day'),('young','completed',CURRENT_TIMESTAMP-INTERVAL '3 years'+INTERVAL '1 day')")
+        self.approved_profile()
+        self.rows("UPDATE caregiver_profile_fields SET updated_at=CURRENT_TIMESTAMP-INTERVAL '4 years'")
+        people=self.rows('SELECT * FROM users ORDER BY sender')
+        with patch.object(retention,'get_connection',base.connect):
+            counts=retention.cleanup_if_due()
+            self.assertEqual(counts['whatsapp_receipts'],1)
+            self.assertEqual(counts['caregiver_profile_fields'],1)
+            self.assertIsNone(retention.cleanup_if_due())
+        self.assertEqual(self.rows('SELECT message_hash FROM whatsapp_receipts'),[('young',)])
+        self.assertEqual(self.rows('SELECT * FROM users ORDER BY sender'),people)
+        self.assertEqual(self.rows('SELECT status FROM caregiver_profiling_consent'),[('granted',)])
+
+    def test_automatic_retention_failure_rolls_back_and_remains_due(self):
+        import retention
+        self.rows("DELETE FROM reporting_settings WHERE key='retention_last_success'")
+        self.rows("INSERT INTO whatsapp_receipts(message_hash,status,received_at) VALUES('old','completed',CURRENT_TIMESTAMP-INTERVAL '4 years')")
+        with patch.object(retention,'get_connection',base.connect),patch.object(retention,'RETENTION',{'whatsapp_receipts':'received_at','missing_retention_table':'created_at'}):
+            with self.assertRaises(Exception):retention.cleanup_if_due()
+        self.assertEqual(self.rows('SELECT COUNT(*) FROM whatsapp_receipts')[0][0],1)
+        self.assertEqual(self.rows("SELECT COUNT(*) FROM reporting_settings WHERE key='retention_last_success'")[0][0],0)
+
+    def test_automatic_retention_lock_and_restart_catchup(self):
+        import retention
+        self.rows("DELETE FROM reporting_settings WHERE key='retention_last_success'")
+        connection=base.connect()
+        try:
+            with connection.cursor() as cur:cur.execute('SELECT pg_advisory_xact_lock(301,307)')
+            with patch.object(retention,'get_connection',base.connect):
+                self.assertIsNone(retention.cleanup_if_due())
+                connection.rollback()
+                self.assertIsNotNone(retention.cleanup_if_due())
+                self.rows("UPDATE reporting_settings SET value=CURRENT_TIMESTAMP-INTERVAL '2 days' WHERE key='retention_last_success'")
+                self.assertIsNotNone(retention.cleanup_if_due())
+        finally:connection.close()
+
+    def test_automatic_retention_disabled_and_failure_retry(self):
+        import retention
+        with patch.dict(os.environ,{'RETENTION_ENABLED':'false'}),patch.object(retention.threading,'Thread') as start:
+            retention.wake_cleanup();start.assert_not_called()
+        with patch.object(retention,'cleanup_if_due',side_effect=RuntimeError('synthetic')),patch.object(retention,'_next_check',0),patch.object(retention.time,'monotonic',return_value=100):
+            retention._run();self.assertEqual(retention._next_check,160)
+
     def test_full_second_batch_covers_every_report_input_and_cleans_all_extra_records(self):
         baseline=data.snapshot(self.today-timedelta(days=29),self.today,excluded={'6500000001'})
         with patch.dict(os.environ,{'CARECONNECT_TEST_DATABASE':'true'}):
