@@ -9,7 +9,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ADMIN_PHONE_NUMBER = os.getenv("ADMIN_PHONE_NUMBER", "")
+def parse_admin_phone_numbers(value):
+    """Read a comma-separated allowlist in WhatsApp's country-code/digits form."""
+    if not isinstance(value, str):
+        return frozenset()
+    numbers = set()
+    for entry in value.split(","):
+        number = entry.strip().removeprefix("+")
+        if re.fullmatch(r"[1-9][0-9]{6,14}", number):
+            numbers.add(number)
+    return frozenset(numbers)
+
+
+ADMIN_PHONE_NUMBERS = parse_admin_phone_numbers(os.getenv("ADMIN_PHONE_NUMBERS", ""))
 ADMIN_PIN = os.getenv("ADMIN_PIN", "")
 
 from database import (
@@ -321,11 +333,18 @@ def admin_application_id_for_choice(choice):
 
 
 def handle_admin_message(sender, text, state):
+    if sender not in ADMIN_PHONE_NUMBERS:
+        if state.startswith("admin_"):
+            update_user(sender, state="main_menu")
+        return "Admin access is not enabled for this WhatsApp number. Type 'menu' for the main menu."
     command = text.strip().lower()
 
+    if not ADMIN_PIN and (command == "admin login" or state.startswith("admin_")):
+        if state.startswith("admin_"):
+            update_user(sender, state="main_menu")
+        return "Admin login is unavailable. Please contact the system administrator."
+
     if command == "admin login":
-        if not ADMIN_PIN:
-            return "Admin login is unavailable. Please contact the system administrator."
         update_user(sender, state="admin_pin")
         return "Enter your admin PIN."
 
@@ -341,7 +360,7 @@ def handle_admin_message(sender, text, state):
         return "You have been logged out."
 
     if state == "admin_pin":
-        if ADMIN_PIN and hmac.compare_digest(command, ADMIN_PIN):
+        if ADMIN_PIN and hmac.compare_digest(text.strip().encode("utf-8"), ADMIN_PIN.encode("utf-8")):
             update_user(sender, state="admin_menu")
             return "Admin login successful.\n\n" + admin_menu_reply()
         return "Incorrect PIN. Try again or type 'menu'."
@@ -939,8 +958,8 @@ def _handle_message(sender, text):
     if buddy_reply is not None:
         return buddy_reply
 
-    if sender == ADMIN_PHONE_NUMBER:
-        admin_reply = handle_admin_message(sender, text, state)
+    if sender in ADMIN_PHONE_NUMBERS or text == "admin login" or state.startswith("admin_"):
+        admin_reply = handle_admin_message(sender, original_text, state)
         if admin_reply is not None:
             return admin_reply
 

@@ -104,6 +104,56 @@ class Phase2Tests(unittest.TestCase):
         analytics.grant_profiling_consent('synthetic-a')
         return analytics.propose_profile_field('synthetic-a', 'support_needs', 'Peer support')
 
+    def test_admin_allowlist_parses_multiple_numbers_and_fails_closed(self):
+        numbers=handlers.parse_admin_phone_numbers(' +6500000001,6500000002, 6500000001, ,invalid, ６５０００００００３,650000 0004,')
+        self.assertEqual(numbers,frozenset({'6500000001','6500000002'}))
+        self.assertNotIn('650000000',numbers)
+        for value in ('', ' , ', 'invalid', None):
+            self.assertEqual(handlers.parse_admin_phone_numbers(value),frozenset())
+
+    def test_multiple_approved_admins_require_password_and_have_independent_states(self):
+        with patch.object(handlers,'ADMIN_PHONE_NUMBERS',frozenset({'synthetic-a','synthetic-b'})), patch.object(handlers,'ADMIN_PIN','Synthetic-PassCase'):
+            for sender in ('synthetic-a','synthetic-b'):
+                self.assertIn('Enter your admin PIN',handlers.handle_message(sender,'admin login'))
+                self.assertEqual(database.get_user(sender)['state'],'admin_pin')
+            self.assertIn('Incorrect PIN',handlers.handle_message('synthetic-a','synthetic-passcase'))
+            self.assertEqual(database.get_user('synthetic-a')['state'],'admin_pin')
+            self.assertIn('login successful',handlers.handle_message('synthetic-a','Synthetic-PassCase'))
+            self.assertEqual(database.get_user('synthetic-b')['state'],'admin_pin')
+            self.assertIn('login successful',handlers.handle_message('synthetic-b','Synthetic-PassCase'))
+            handlers.handle_message('synthetic-a','3')
+            self.assertEqual(database.get_user('synthetic-a')['state'],'main_menu')
+            self.assertEqual(database.get_user('synthetic-b')['state'],'admin_menu')
+
+    def test_unapproved_admin_cannot_login_or_use_private_routes(self):
+        with patch.object(handlers,'ADMIN_PHONE_NUMBERS',frozenset({'synthetic-a'})), patch.object(handlers,'ADMIN_PIN','Synthetic-PassCase'), patch.object(handlers,'admin_application_summary',side_effect=AssertionError('Private route must not run')):
+            self.assertIn('not enabled',handlers.handle_message('synthetic-b','admin login'))
+            database.update_user('synthetic-b',state='admin_pin')
+            self.assertIn('not enabled',handlers.handle_message('synthetic-b','Synthetic-PassCase'))
+            self.assertEqual(database.get_user('synthetic-b')['state'],'main_menu')
+            database.update_user('synthetic-b',state='admin_menu')
+            self.assertIn('not enabled',handlers.handle_message('synthetic-b','2'))
+            self.assertEqual(database.get_user('synthetic-b')['state'],'main_menu')
+            self.assertIn('not enabled',handlers.handle_admin_message('synthetic-b','2','admin_menu'))
+
+    def test_removing_approved_number_revokes_admin_state(self):
+        with patch.object(handlers,'ADMIN_PHONE_NUMBERS',frozenset({'synthetic-a'})), patch.object(handlers,'ADMIN_PIN','Synthetic-PassCase'):
+            handlers.handle_message('synthetic-a','admin login')
+            handlers.handle_message('synthetic-a','Synthetic-PassCase')
+            with patch.object(handlers,'ADMIN_PHONE_NUMBERS',frozenset()):
+                self.assertIn('not enabled',handlers.handle_message('synthetic-a','menu'))
+                self.assertEqual(database.get_user('synthetic-a')['state'],'main_menu')
+            self.assertIn('Enter your admin PIN',handlers.handle_message('synthetic-a','admin login'))
+            self.assertEqual(database.get_user('synthetic-a')['state'],'admin_pin')
+
+    def test_missing_admin_configuration_cannot_reuse_logged_in_state(self):
+        with patch.object(handlers,'ADMIN_PHONE_NUMBERS',frozenset()), patch.object(handlers,'ADMIN_PIN','Synthetic-PassCase'):
+            self.assertIn('not enabled',handlers.handle_message('synthetic-a','admin login'))
+        database.update_user('synthetic-a',state='admin_menu')
+        with patch.object(handlers,'ADMIN_PHONE_NUMBERS',frozenset({'synthetic-a'})), patch.object(handlers,'ADMIN_PIN',''):
+            self.assertIn('unavailable',handlers.handle_message('synthetic-a','2'))
+            self.assertEqual(database.get_user('synthetic-a')['state'],'main_menu')
+
     def test_validation_all_direct_writes(self):
         from profile_validation import is_safe_profile_value
         unsafe = ['Call +65 9123 4567', 'a@example.com', 'S1234567D',
