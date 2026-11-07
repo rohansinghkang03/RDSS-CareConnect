@@ -157,6 +157,7 @@ def prepare(sender,text,user):
             command={'reports':'4','statistics':'4','download report':'4','applications':'1','summary':'2','logout':'3'}.get(command,command)
             return command,None
         return text,None
+    if command in {'notifications','notifications on','notifications off','stop notifications','stop alerts','unsubscribe','stop'}:return text,None
     if not private_field(state):
         normalized=unicodedata.normalize('NFKC',text).strip().replace('،',',').replace('、',',')
         if re.fullmatch(r'[\d,\s.。]+',normalized):

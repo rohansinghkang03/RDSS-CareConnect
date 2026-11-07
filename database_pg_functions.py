@@ -416,6 +416,15 @@ def submit_support_buddy_application(sender, consent_text):
             connection.execute(
                 "UPDATE users SET state = 'buddy_registration_submitted' WHERE sender = ?", (sender,)
             )
+            from notifications import subscribe,enqueue
+            subscribe(connection,sender)
+            application=connection.execute('SELECT id,review_version FROM support_buddy_applications WHERE sender=?',(sender,)).fetchone()
+            import os
+            from handlers import parse_admin_phone_numbers
+            for admin in parse_admin_phone_numbers(os.getenv('ADMIN_PHONE_NUMBERS','')):
+                # Only existing admin accounts can be notified; never create one here.
+                if connection.execute('SELECT 1 FROM users WHERE sender=?',(admin,)).fetchone():
+                    enqueue(connection,admin,'application_submitted',application['id'],str(application['id'])+':'+str(application['review_version']))
             return True
     finally:
         connection.close()
@@ -647,6 +656,9 @@ def create_selected_match_request(requester):
                 request = connection.execute(
                     "SELECT * FROM match_requests WHERE id = ?", (cursor.lastrowid,)
                 ).fetchone()
+                from notifications import subscribe,enqueue
+                subscribe(connection,requester)
+                enqueue(connection,preview['buddy_sender'],'connection_request',request['id'],request['id'])
                 outcome = "created"
             else:
                 request = existing
@@ -715,6 +727,8 @@ def respond_to_buddy_request(sender, request_id, decision):
                 UPDATE match_requests SET status = ?, responded_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND buddy_sender = ? AND status = 'pending'
             """, (decision, request_id, sender))
+            from notifications import enqueue
+            enqueue(connection,row['requester'],'connection_'+decision,request_id,request_id)
             result = dict(row)
             result["status"] = decision
             return "updated", result
@@ -892,6 +906,10 @@ def review_support_buddy_application(application_id, action, notes, actor, versi
                 "INSERT INTO admin_review_events (application_id, action, actor, notes) VALUES (?, ?, ?, ?)",
                 (application_id, action, actor, notes)
             )
+            if action in {'approve','reject','verify'}:
+                from notifications import enqueue
+                event={'approve':'application_approved','reject':'application_rejected','verify':'application_verified'}[action]
+                enqueue(connection,row['sender'],event,application_id,str(application_id)+':'+str(version+1))
     finally:
         connection.close()
 

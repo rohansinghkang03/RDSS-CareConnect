@@ -110,6 +110,7 @@ REGISTRATION_QUESTIONS = {
     "introduction": "Write a short introduction about yourself (up to 500 characters), or type 'skip'.\nThis may be shared with potential matches."
 }
 CONSENT_TEXT = (
+    "I agree to receive WhatsApp updates about my Support Buddy application and incoming connection requests. I can type 'notifications off' to stop alerts. "
     "I agree that RDSS may contact me about my Support Buddy application and "
     "share my public profile with potential matches: my display name (or 'Support Buddy'), "
     "languages, caregiving experience, support offered, availability, contact preferences "
@@ -392,6 +393,23 @@ def handle_admin_message(sender, text, state):
             logout(sender)
             update_user(sender,state='main_menu')
             return "Your admin session has expired or changed. Type 'admin login' to sign in again."
+        if command in {'notifications','notifications on','notifications off'}:
+            from notifications import command as notification_command
+            return notification_command(sender,command)
+        if state in {'admin_menu','admin_report_period','admin_applications'} and not command.isdigit():
+            from admin_assist import resolve
+            intent=resolve(text)
+            if intent:
+                action,period=intent
+                if action=='report':
+                    if period:
+                        from reporting_jobs import request_report
+                        result=request_report(sender,period,ADMIN_PIN,ADMIN_PHONE_NUMBERS)
+                        update_user(sender,state='admin_menu')
+                        return result
+                    update_user(sender,state='admin_menu');state='admin_menu';command='4'
+                elif action in {'applications','summary'}:
+                    update_user(sender,state='admin_menu');state='admin_menu';command='1' if action=='applications' else '2'
         if command=='report status':
             from reporting_jobs import job_status
             return job_status(sender)
@@ -679,7 +697,7 @@ def show_match_choice(sender, match, user):
     else:opening="We may have found someone you could connect with! 💜\n\n"+match['name']
     return caregiver_message(sender,opening+'\n\n'+details+
         "\n\nThese are their usual preferences, not a promise that they are online now. They will need to accept your request."
-        "\n\nWould you like to send them a connection request?\n1. Yes, send request\n2. No, go back\n\nType 'menu' for the main menu.",required_text=match['name'])
+        "\n\nWould you like to send them a connection request? We will send WhatsApp updates about this connection. Type 'notifications off' anytime to stop alerts.\n1. Yes, send request\n2. No, go back\n\nType 'menu' for the main menu.",required_text=match['name'])
 
 
 def show_match_alternatives(sender, matches=None):
@@ -1081,6 +1099,8 @@ def handle_message(sender, text):
         except (PermissionError, ValueError):
             reply=caregiver_message(sender,"That action is no longer available. Type 'profile' to view your profile or 'menu' for the main menu. 💜")
         reply=add_reply_navigation(sender,reply)
+        from navigation_design import organize
+        reply=organize(sender,reply,(get_user(sender) or {}).get('state',''))
         result=render_reply(sender,reply)
         if turn.get('chat_request_id'):
             from match_chat import ChatReply,button_label
@@ -1104,6 +1124,10 @@ def _handle_message(sender, text):
         admin_reply = handle_admin_message(sender, original_text, state)
         if admin_reply is not None:
             return admin_reply
+
+    from notifications import command as notification_command
+    notice=notification_command(sender,text)
+    if notice is not None:return notice
 
     from match_chat import handle as handle_match_chat
     chat_reply=handle_match_chat(sender,text,state)

@@ -48,7 +48,9 @@ def process_message(message):
             if os.getenv('REPORTING_ENABLED','').lower()=='true':
                 from reporting_tracking import record_activity
                 record_activity(sender,digest)
+            from notifications import touch
             reply = handle_message(sender, body.strip())
+            touch(sender)
             from match_chat import ChatReply
             if isinstance(reply,ChatReply):
                 from match_chat_delivery import send as send_match_chat
@@ -61,6 +63,8 @@ def process_message(message):
             logger.error('WhatsApp processing failed; receipt requires reconciliation')
             raise RuntimeError('Message processing failed') from None
         else:
+            from notifications import wake_worker as wake_notifications
+            wake_notifications()
             with connection:
                 with connection.cursor() as cursor:
                     cursor.execute("UPDATE whatsapp_receipts SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE message_hash=%s", (digest,))
@@ -109,6 +113,8 @@ def resume_reports():
     wake_worker()
     from retention import wake_cleanup
     wake_cleanup()
+    from notifications import wake_worker as wake_notifications
+    wake_notifications()
 
 
 @app.get('/')
@@ -134,11 +140,16 @@ def health():
                 chat_enabled=enabled()
                 cur.execute("SELECT to_regclass('match_chat_permissions') IS NOT NULL AND to_regclass('match_chat_deliveries') IS NOT NULL")
                 chat_ready=cur.fetchone()[0] if chat_enabled else True
+                from notifications import enabled as notifications_enabled
+                alerts_enabled=notifications_enabled()
+                cur.execute("SELECT to_regclass('notification_preferences') IS NOT NULL AND to_regclass('notification_outbox') IS NOT NULL")
+                alerts_ready=cur.fetchone()[0] if alerts_enabled else True
         ready=ready and (Path(__file__).parent/'report_templates'/'CareConnectStatistics_Template.xlsx').is_file()
-        return {'status':'ok' if ready and conversation_ready and chat_ready else 'unavailable',
+        return {'status':'ok' if ready and conversation_ready and chat_ready and alerts_ready else 'unavailable',
                 'reporting':'ready' if ready else 'unavailable',
                 'conversation':'ready' if conversation_ready else 'unavailable',
-                'match_chat':('ready' if chat_ready else 'unavailable') if chat_enabled else 'disabled'},200 if ready and conversation_ready and chat_ready else 503
+                'match_chat':('ready' if chat_ready else 'unavailable') if chat_enabled else 'disabled',
+                'notifications':('ready' if alerts_ready else 'unavailable') if alerts_enabled else 'disabled'},200 if ready and conversation_ready and chat_ready and alerts_ready else 503
     except Exception:
         return {'status':'unavailable','reporting':'unavailable'},503
     finally:

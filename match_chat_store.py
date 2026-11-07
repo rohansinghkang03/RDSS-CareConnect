@@ -89,6 +89,14 @@ def decide(sender,request_id,decision):
               decision=EXCLUDED.decision,consent_version=EXCLUDED.consent_version,pair_key=EXCLUDED.pair_key,updated_at=CURRENT_TIMESTAMP''',
               (request_id,sender,decision,VERSION,pair_key))
             cur.execute('DELETE FROM match_chat_prompts WHERE sender=%s',(sender,))
+            if decision=='granted':
+                from notifications import enabled as alerts_enabled
+                if alerts_enabled():
+                    decisions=_permissions(cur,request_id,pair)
+                    if all(decisions.get(person)=='granted' for person in pair['participants']):
+                        for person in pair['participants']:
+                            cur.execute("INSERT INTO notification_outbox(recipient,event,entity_id,event_key) VALUES(%s,'chat_ready',%s,%s) ON CONFLICT DO NOTHING",(person,request_id,pair['key']))
+
     finally:connection.close()
 
 def accepted_connections(sender):

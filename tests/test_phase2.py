@@ -312,7 +312,7 @@ class Phase2Tests(unittest.TestCase):
         self.assertIn('Synthetic AI reply', handlers.handle_message('synthetic-a','Hello Mixed CASE'))
         chat.ask_careconnect.assert_called_once_with('synthetic-a','Hello Mixed CASE')
         database.update_user('synthetic-a', state='resources_menu')
-        self.assertIn('Type', handlers.handle_message('synthetic-a','1'))
+        self.assertIn('You can type these other commands too:', handlers.handle_message('synthetic-a','1'))
         database.update_user('synthetic-a', state='main_menu')
         self.pending()
         self.assertIn('withdrawn', handlers.handle_message('synthetic-a','withdraw profile consent'))
