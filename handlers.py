@@ -646,11 +646,56 @@ def handle_buddy_request_command(sender, text):
     if outcome == "unavailable":
         return "Your Support Buddy profile must be approved and verified where required before accepting. Type 'application status' to check it."
     if outcome == "already_resolved":
+        if request and request.get('status')=='accepted':
+            from match_chat_store import enabled
+            if enabled():
+                from match_chat import screen
+                return screen(sender,number)
         return "Request #" + str(number) + " was already " + request["status"] + ". Type 'requests' for pending requests."
     reply = "Request #" + str(number) + " " + decision + ". The caregiver can type 'status' to see your response."
     if decision == "accepted":
+        from match_chat_store import enabled
+        if enabled():
+            from match_chat import screen
+            return screen(sender,number)
         reply += "\nAcceptance is recorded. Chat between buddies and contact sharing are not enabled yet."
     return reply + "\nType 'requests' to see other pending requests."
+
+
+def show_match_choice(sender, match, user):
+    """Display one candidate; only the later explicit confirmation sends a request."""
+    save_match_preview(sender,match,user)
+    protect(match['name'])
+    details="\n".join('- '+item for item in match['shared_preferences'])
+    tier=match.get('tier','exact')
+    if tier=='support':
+        opening=("We haven't found someone who fits both preferences, but there may still be a lovely connection here. 💜\n\n"
+                 +match['name']+" offers the kind of support you're looking for. Their usual times are "
+                 +', '.join(match['offered_times'])+", which differ from your preferred time. Would you be open to trying those times?")
+    elif tier=='time':
+        opening=("If your preferred timing matters more to you, here's another possibility. 💜\n\n"
+                 +match['name']+" has a usual schedule that fits yours. They offer "
+                 +', '.join(match['offered_support'])+", rather than your selected support preference. Would you like to get to know them?")
+    else:opening="We may have found someone you could connect with! 💜\n\n"+match['name']
+    return caregiver_message(sender,opening+'\n\n'+details+
+        "\n\nThese are their usual preferences, not a promise that they are online now. They will need to accept your request."
+        "\n\nWould you like to send them a connection request?\n1. Yes, send request\n2. No, go back\n\nType 'menu' for the main menu.",required_text=match['name'])
+
+
+def show_match_alternatives(sender, matches=None):
+    user=get_user(sender)
+    matches=find_matches(user) if matches is None else matches
+    if not matches:return buddy_unavailable_reply(sender,no_matches=True)
+    # New exact candidates may have become eligible since the previous search.
+    exact=next((m for m in matches if m.get('tier','exact')=='exact'),None)
+    if exact:return show_match_choice(sender,exact,user)
+    update_user(sender,state='match_alternatives')
+    lines=["I haven't found someone who fits both your support preference and timing just yet. That doesn't have to be the end of the search. 💜",
+           "Would you be open to one of these options?"]
+    if any(m['tier']=='support' for m in matches):lines.append('1. Keep my support preference and try a different time')
+    if any(m['tier']=='time' for m in matches):lines.append('2. Keep my preferred timing and explore a different kind of support')
+    lines.append("3. Change my preferences\n4. Talk to CareConnect AI\n\nI'll show you the person's details before you decide. Nothing is sent yet. Their usual timing doesn't mean they are online now.\n\nType 'menu' for the main menu.")
+    return caregiver_message(sender,'\n\n'.join(lines))
 
 
 def buddy_unavailable_reply(sender, no_matches=False):
@@ -784,26 +829,31 @@ def caregiver_message(sender, message, required_text=None):
 def show_careconnect_menu(sender):
     track_usage_safely(sender, "main_menu_opened")
     from conversation_context import current
-    if current.get():return MAIN_MENU_MESSAGE
+    from match_chat_store import enabled
+    message=MAIN_MENU_MESSAGE
+    if enabled():message+="\n\nType 'my chats' for accepted connections and contact-sharing settings."
+    if current.get():return message
     language = get_matching_language_example(sender)
 
     if not language or language.lower() == "english":
-        return MAIN_MENU_MESSAGE
+        return message
 
     return safe_adapt_message(
-        MAIN_MENU_MESSAGE,
+        message,
         language,
         required_text="'menu'"
     )
 
 
 def show_status_menu(sender):
+    from match_chat_store import enabled
+    chat_option="5. Accepted connections / match chat\n" if enabled() else ''
     return caregiver_message(sender, (
         "My status 💜\n\n"
         "1. My buddy connection request\n"
         "2. My Support Buddy application\n"
         "3. Return to main menu\n"
-        "4. Incoming buddy connection requests\n\n"
+        "4. Incoming buddy connection requests\n"+chat_option+"\n"
         "Choose a number. Type 'menu' for the main menu."
     ))
 
@@ -989,6 +1039,8 @@ def add_reply_navigation(sender, reply):
         elif state.startswith('profile_') or state=='profiling_consent':
             footer="Type 'back' for the previous profile screen."
             if not has_menu:footer+=" Type 'profile' for your profile, or 'menu' for the main menu."
+        elif state.startswith(('contact_share_','contact_chat_')):
+            footer="Type 'back' or 'my chats' for your connections, or 'menu' for the main menu."
         elif state.startswith('buddy_registration_'):
             footer="Type 'back' to return within your application, or 'menu' to pause. Type 'my status' to check your application."
         elif state in {'match_pending','matched','buddy_unavailable'}:
@@ -1022,14 +1074,18 @@ def handle_message(sender, text):
     if user is None:
         create_user(sender);user=get_user(sender)
     language=canonical_language(get_matching_language_example(sender)) or ''
-    with conversation(language,get_style(sender,language)):
+    with conversation(language,get_style(sender,language)) as turn:
         try:
             routed,reply=prepare(sender,text,user)
             if reply is None:reply=_handle_message(sender,routed)
         except (PermissionError, ValueError):
             reply=caregiver_message(sender,"That action is no longer available. Type 'profile' to view your profile or 'menu' for the main menu. 💜")
         reply=add_reply_navigation(sender,reply)
-        return render_reply(sender,reply)
+        result=render_reply(sender,reply)
+        if turn.get('chat_request_id'):
+            from match_chat import ChatReply,button_label
+            return ChatReply(result,turn['chat_request_id'],button_label(turn['language'],turn['style']))
+        return result
 
 
 def _handle_message(sender, text):
@@ -1048,6 +1104,10 @@ def _handle_message(sender, text):
         admin_reply = handle_admin_message(sender, original_text, state)
         if admin_reply is not None:
             return admin_reply
+
+    from match_chat import handle as handle_match_chat
+    chat_reply=handle_match_chat(sender,text,state)
+    if chat_reply is not None:return chat_reply
 
     buddy_reply = handle_buddy_request_command(sender, text)
     if buddy_reply is not None:
@@ -1103,6 +1163,10 @@ def _handle_message(sender, text):
                 )
 
         elif latest_request["status"] == "accepted":
+            from match_chat_store import enabled
+            if enabled():
+                from match_chat import screen
+                return screen(sender,latest_request['id'])
             update_user(
                 sender,
                 state="matched"
@@ -1473,31 +1537,23 @@ def _handle_message(sender, text):
         track_usage_safely(sender, "buddy_match_found")
         best_match = matches[0]
 
-        save_match_preview(sender, best_match, user)
+        if best_match.get('tier','exact')!='exact':
+            return show_match_alternatives(sender,matches)
+        return show_match_choice(sender,best_match,user)
 
-        preferences_text = "\n".join(
-            "- " + item for item in best_match["shared_preferences"]
-        )
-
-        match_message = (
-            "We may have found someone you could connect with! 💜\n\n"
-            + best_match["name"] + "\n\n"
-            + preferences_text + "\n\n"
-            + "Would you like to send them a connection request?\n\n"
-            + "1. Yes\n"
-            + "2. No"
-        )
-
-        language_example = get_matching_language_example(
-            sender,
-            fallback=original_text
-        )
-
-        return safe_adapt_message(
-            match_message,
-            language_example,
-            required_text=best_match["name"]
-        )
+    elif state == 'match_alternatives':
+        if text in {'1','2'}:
+            tier='support' if text=='1' else 'time'
+            candidate=next((m for m in find_matches(user) if m.get('tier')==tier),None)
+            if candidate:return show_match_choice(sender,candidate,user)
+            return caregiver_message(sender,"That option has changed since we last checked. Let's see what's available now. 💜")+'\n\n'+show_match_alternatives(sender)
+        if text=='3':
+            update_user(sender,state='ai_onboarding',support_type=None,availability=None)
+            return caregiver_message(sender,"Of course. What kind of support would help you most? Type 'menu' to return to the main menu.")
+        if text=='4':
+            update_user(sender,state='ai_chat')
+            return caregiver_message(sender,"I'm here to listen. What's on your mind? 💜 Type 'menu' for the main menu.")
+        return show_match_alternatives(sender)
 
     elif state == "confirm_match":
         if text == "1":
@@ -1552,8 +1608,11 @@ def _handle_message(sender, text):
                 )
 
         elif text == "2":
+            # Keep both alternative routes accessible after declining a preview.
+            candidates=find_matches(user)
+            if candidates and not any(m.get('tier','exact')=='exact' for m in candidates):
+                return show_match_alternatives(sender,candidates)
             reset_user(sender)
-
             return caregiver_message(
                     sender,
                     (
@@ -1584,6 +1643,10 @@ Type 'menu' to return to the main menu.
         if latest_request:protect(latest_request.get('caregiver_name'))
 
         if latest_request is not None:
+            from match_chat_store import enabled
+            if enabled() and latest_request['status']=='accepted':
+                from match_chat import screen
+                return screen(sender,latest_request['id'])
             return (
                     caregiver_message(sender, "You are currently matched with ")
                     + latest_request["caregiver_name"]

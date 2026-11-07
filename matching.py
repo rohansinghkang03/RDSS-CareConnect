@@ -64,12 +64,15 @@ def find_matches(user):
             "name": buddy["name"],
             "score": score,
             "percentage": percentage,
-            "shared_preferences": shared_preferences
+            "shared_preferences": shared_preferences,
+            "tier": 'exact' if score==2 else 'support' if user.get("support_type") in support_types else 'time',
+            "offered_support": sorted(support_types),
+            "offered_times": sorted(availability)
         })
 
     results.sort(
         key=lambda person: (
-            -person["score"],
+            {'exact':0,'support':1,'time':2}[person['tier']],
             person["buddy_id"]
         )
     )

@@ -3,9 +3,24 @@ import requests
 import uuid
 from config import ACCESS_TOKEN, PHONE_NUMBER_ID
 
+class WhatsAppRejected(RuntimeError):
+    def __init__(self,http_status=None,provider_code=None):
+        super().__init__('WhatsApp delivery failed')
+        self.http_status=http_status if isinstance(http_status,int) else None
+        self.provider_code=provider_code if isinstance(provider_code,int) else None
+
 
 def send_message(recipient, message):
     return _send(recipient,'text',{'body':message})
+
+def send_chat_url_button(recipient,body,label,url):
+    import re
+    if (not isinstance(body,str) or not 0<len(body)<=1024
+        or not isinstance(label,str) or not 0<len(label)<=20
+        or not isinstance(url,str) or not re.fullmatch(r'https://wa[.]me/[1-9][0-9]{6,14}',url)):
+        raise ValueError('Invalid match-chat button')
+    return _send(recipient,'interactive',{'type':'cta_url','body':{'text':body},
+        'action':{'name':'cta_url','parameters':{'display_text':label,'url':url}}})
 
 
 def _send(recipient,kind,payload):
@@ -31,7 +46,9 @@ def _send(recipient,kind,payload):
     if not response.ok:
         if enabled:safe_write("UPDATE reporting_outgoing SET outcome='failed' WHERE attempt_id=%s",(attempt,))
         # Never include response bodies, URLs, tokens or recipient identifiers.
-        raise RuntimeError("WhatsApp delivery failed")
+        try:code=response.json().get('error',{}).get('code')
+        except (ValueError,AttributeError,TypeError):code=None
+        raise WhatsAppRejected(response.status_code,code)
     try:
         identifier=response.json()['messages'][0]['id']
         if not isinstance(identifier,str) or not identifier:raise ValueError()

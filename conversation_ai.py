@@ -103,7 +103,7 @@ def classify(message,state,options,allow_choices=True):
     """Only enum actions/numbers reach handlers; user text is untrusted classification input."""
     from chatbot import client,MODEL
     if not isinstance(message,str) or not 0<len(message)<=4096:return None
-    actions=['none','local','help','clarify','urgent','back','cancel','menu','profile','my status','status','application status',
+    actions=['none','local','help','clarify','urgent','match_chat','back','cancel','menu','profile','my status','status','application status',
              'requests','language','find_buddy','ai_chat','resources','volunteer','contact']
     schema={'type':'object','properties':{
         'action':{'type':'string','enum':actions},
@@ -121,6 +121,8 @@ Numbers are guides; match paraphrases to the CURRENT screen before global destin
 Questions about opening another feature ("how do I go to resources?", "怎么去资源中心？")
 are navigation requests: choose resources/profile/my status/etc, not generic help.
 Help explains the CURRENT screen; do not mistake an explicit navigation question for help.
+Wanting to chat with an ALREADY accepted match means match_chat; looking for a new buddy means find_buddy.
+Never infer contact-sharing permission. A question about sharing numbers is help, not agreement.
 Explicit immediate danger or intent to harm oneself/another person NOW means urgent, choices=[].
 Urgent overrides menu choice and ordinary chat routing. Do not infer immediate danger from tiredness or loneliness alone.
 Return none when uncertain. Never infer consent, acceptance, submission, deletion or a preference from distress.

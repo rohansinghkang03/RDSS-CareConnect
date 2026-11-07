@@ -49,7 +49,11 @@ def process_message(message):
                 from reporting_tracking import record_activity
                 record_activity(sender,digest)
             reply = handle_message(sender, body.strip())
-            send_message(sender, reply)
+            from match_chat import ChatReply
+            if isinstance(reply,ChatReply):
+                from match_chat_delivery import send as send_match_chat
+                send_match_chat(sender,reply)
+            else:send_message(sender, reply)
         except Exception:
             with connection:
                 with connection.cursor() as cursor:
@@ -126,10 +130,15 @@ def health():
                 ready=cur.fetchone() is not None
                 cur.execute("SELECT to_regclass('communication_preferences') IS NOT NULL")
                 conversation_ready=cur.fetchone()[0]
+                from match_chat_store import enabled
+                chat_enabled=enabled()
+                cur.execute("SELECT to_regclass('match_chat_permissions') IS NOT NULL AND to_regclass('match_chat_deliveries') IS NOT NULL")
+                chat_ready=cur.fetchone()[0] if chat_enabled else True
         ready=ready and (Path(__file__).parent/'report_templates'/'CareConnectStatistics_Template.xlsx').is_file()
-        return {'status':'ok' if ready and conversation_ready else 'unavailable',
+        return {'status':'ok' if ready and conversation_ready and chat_ready else 'unavailable',
                 'reporting':'ready' if ready else 'unavailable',
-                'conversation':'ready' if conversation_ready else 'unavailable'},200 if ready and conversation_ready else 503
+                'conversation':'ready' if conversation_ready else 'unavailable',
+                'match_chat':('ready' if chat_ready else 'unavailable') if chat_enabled else 'disabled'},200 if ready and conversation_ready and chat_ready else 503
     except Exception:
         return {'status':'unavailable','reporting':'unavailable'},503
     finally:

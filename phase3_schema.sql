@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS reporting_ai (
 CREATE INDEX IF NOT EXISTS reporting_ai_time ON reporting_ai(occurred_at);
 CREATE TABLE IF NOT EXISTS reporting_outgoing (
  attempt_id TEXT PRIMARY KEY, provider_id TEXT UNIQUE,
- kind TEXT NOT NULL CHECK(kind IN ('text','document')),
+ kind TEXT NOT NULL CHECK(kind IN ('text','document','interactive')),
  outcome TEXT NOT NULL CHECK(outcome IN ('attempted','accepted','failed','unknown')),
  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

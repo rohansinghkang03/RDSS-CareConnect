@@ -17,6 +17,7 @@ OPTIONS={
  'resources_detail':{'1':'RDSS support','2':'Caregiver support','3':'Financial and social support','4':'Urgent support'},
  'buddy_unavailable':{'1':'Find another buddy','2':'Talk to CareConnect AI','3':'Main menu'},
  'ai_onboarding_confirm':{'1':'Yes, search using these preferences','2':'Start again / change preferences'},
+ 'match_alternatives':{'1':'Same support preference, different usual time','2':'Same usual time, different support preference','3':'Change my preferences','4':'Talk to CareConnect AI'},
  'confirm_match':{'1':'Yes, send connection request','2':'No, do not send request'},
  'buddy_registration_review':{'1':'Continue to consent','2':'Edit an answer','3':'Cancel application'},
  'buddy_registration_consent':{'1':'I agree, submit application','2':'Back to review without submitting','3':'Cancel application'},
@@ -57,6 +58,10 @@ def private_navigation(command):
 
 def options_for(state):
     from handlers import REGISTRATION_OPTIONS,REGISTRATION_FIELDS
+    if state.startswith('contact_share_'):return {'1':'I agree to share my WhatsApp number with this accepted match','2':'Not now; do not share my number'}
+    if state=='status_menu':
+        from match_chat_store import enabled
+        return OPTIONS[state]|({'5':'Accepted connections / match chat'} if enabled() else {})
     if state=='buddy_registration_edit':return {str(i):label for i,(_,_,label) in enumerate(REGISTRATION_FIELDS,1)}|{'0':'Back to review'}
     step=state.removeprefix('buddy_registration_edit_') if state.startswith('buddy_registration_edit_') else state.removeprefix('buddy_registration_')
     return OPTIONS.get(state,REGISTRATION_OPTIONS.get(step,{}))
@@ -65,6 +70,9 @@ def current_screen(sender,state):
     import handlers as h
     import profile_navigation as p
     from database import get_support_buddy_draft
+    if state.startswith(('contact_share_','contact_chat_')):
+        from match_chat import screen
+        return screen(sender,int(state.rsplit('_',1)[1]),offer=False)
     if state=='main_menu':return h.show_careconnect_menu(sender)
     if state=='language_selection':return h.LANGUAGE_SELECTION_MESSAGE
     if state=='profile_menu':return p.show_profile(sender)
@@ -80,6 +88,7 @@ def current_screen(sender,state):
     if state=='profile_review_edit':return "Please type your corrected profile information. It will only be saved after you confirm the exact wording. Leave out names and contact details. Type 'profile' to leave this edit, or 'menu' for the main menu."
     if state=='profile_withdraw_confirm':return "Withdraw profile permission? This deletes saved profile information, suggestions and unfinished edits. AI chat history remains.\n\n1. Yes, withdraw permission and delete my profile\n2. Cancel and keep my profile\n\nType 'menu' for the main menu."
     if state=='status_menu':return h.show_status_menu(sender)
+    if state=='match_alternatives':return h.show_match_alternatives(sender)
     if state=='ai_onboarding_confirm':
         user=h.get_user(sender)
         return ('Here are your current matching preferences:\nSupport: '+str(user.get('support_type') or 'Not yet specified')
@@ -101,6 +110,9 @@ def current_screen(sender,state):
 
 def go_back(sender,state):
     import handlers as h
+    if state.startswith(('contact_share_','contact_chat_')):
+        from match_chat import list_connections
+        h.update_user(sender,state='main_menu');return list_connections(sender)
     if state=='language_selection':
         previous=ai.take_resume_state(sender) or 'main_menu'
         if previous.startswith('admin_'):previous='main_menu'
@@ -165,6 +177,8 @@ def prepare(sender,text,user):
         return text,None
     if command=='back':return text,go_back(sender,state)
     if command=='help':return text,current_screen(sender,state)
+    if command=='my chats' or re.fullmatch(r'(?:chat|stop chat) \d{1,10}',command):return text,None
+    if state.startswith('contact_share_') and command=='i agree to share my whatsapp number with this match':return text,None
     if command in DIRECT_DESTINATIONS:
         if command=='ai chat' and state=='ai_chat':return text,current_screen(sender,state)
         h.update_user(sender,state='main_menu')
@@ -207,6 +221,9 @@ def prepare(sender,text,user):
     if result['action']=='urgent' and result['route_confident']:
         # Fixed verified-behaviour message only: no invented helplines, promises or dispatch.
         return text,h.get_resource_reply('4')
+    if result['action']=='match_chat' and result['route_confident']:
+        if state.startswith('contact_chat_'):return 'chat '+state.rsplit('_',1)[1],None
+        return 'my chats',None
     if state=='main_menu':
         destinations={'find_buddy':'1','ai_chat':'2','resources':'3','volunteer':'4','contact':'5',
                       'profile':'6','my status':'7','status':'7','application status':'7','language':'8'}
@@ -229,7 +246,7 @@ def prepare(sender,text,user):
         from handlers import MULTI_SELECT_FIELDS
         step=state.removeprefix('buddy_registration_edit_') if state.startswith('buddy_registration_edit_') else state.removeprefix('buddy_registration_')
         if len(choices)>1 and step not in MULTI_SELECT_FIELDS:return text,None
-        if state in SENSITIVE:
+        if state in SENSITIVE or state.startswith('contact_share_'):
             # Edit/back/keep/do-not-send choices do not approve or delete anything.
             if choices==['2'] and state!='profiling_consent':return '2',None
             if state=='buddy_registration_consent' and choices==['3']:return '3',None

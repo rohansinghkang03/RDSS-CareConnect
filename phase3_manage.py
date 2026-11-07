@@ -16,7 +16,8 @@ RETENTION={
  'caregiver_profile_suggestions':'created_at','caregiver_profile_fields':'updated_at',
  'conversation_messages':'created_at',
 }
-OPTIONAL_RETENTION={'communication_preferences':'updated_at'}
+OPTIONAL_RETENTION={'communication_preferences':'updated_at','match_chat_permissions':'updated_at',
+                    'match_chat_deliveries':'created_at','match_chat_prompts':'shown_at'}
 
 def retention_scopes(cursor,scopes=None):
     result=dict(RETENTION if scopes is None else scopes)
