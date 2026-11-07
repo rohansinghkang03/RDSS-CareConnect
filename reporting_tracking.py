@@ -94,6 +94,15 @@ def tracked_create(create, feature, **kwargs):
     return response
 
 def feature_call(feature, create, **kwargs):
+    # A multilingual turn may make several calls. Share a wall-clock budget rather
+    # than letting each consume the full timeout and kill the web worker mid-action.
+    import time
+    from conversation_context import current
+    context=current.get()
+    if context:
+        remaining=context['deadline']-time.monotonic()
+        if remaining<=0.25:raise TimeoutError('Conversation AI time budget exhausted')
+        kwargs['timeout']=remaining
     return tracked_create(create,feature,**kwargs)
 
 def record_status(status):

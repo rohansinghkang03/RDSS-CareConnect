@@ -1,13 +1,14 @@
 """Request-local presentation data. Never persist a caregiver's message as a language."""
 from contextvars import ContextVar
 from contextlib import contextmanager
+import time
 
 current=ContextVar('careconnect_conversation',default=None)
 
 @contextmanager
 def conversation(language='',style='standard'):
     value={'language':language,'style':style,'protected':set(),'defer':True,
-           'generated':False,'fixed_localized':False}
+           'generated':False,'fixed_localized':False,'deadline':time.monotonic()+24}
     token=current.set(value)
     try:yield value
     finally:current.reset(token)

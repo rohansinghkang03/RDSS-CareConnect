@@ -323,3 +323,17 @@ class Phase4AIContractTests(unittest.TestCase):
         with conversation('Malay','casual'):self.assertIn('casual',target())
         with conversation('Tamil'):self.assertEqual(target(),'Tamil')
         self.assertEqual(target('English'),'English')
+
+    def test_ai_calls_share_a_bounded_turn_budget(self):
+        import reporting_tracking as tracking
+        with conversation('Malay'),patch.object(tracking,'tracked_create',return_value='ok') as tracked:
+            self.assertEqual(tracking.feature_call('Translation',Mock(),model='synthetic'),'ok')
+            self.assertGreater(tracked.call_args.kwargs['timeout'],0)
+            self.assertLessEqual(tracked.call_args.kwargs['timeout'],24)
+
+    def test_exhausted_turn_budget_never_starts_another_provider_call(self):
+        import reporting_tracking as tracking
+        with conversation('Malay') as context,patch.object(tracking,'tracked_create') as tracked:
+            context['deadline']=0
+            with self.assertRaises(TimeoutError):tracking.feature_call('Translation',Mock(),model='synthetic')
+            tracked.assert_not_called()
