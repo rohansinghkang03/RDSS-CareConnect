@@ -332,6 +332,28 @@ class Phase3Tests(unittest.TestCase):
             self.assertEqual(book.value('Messages & costs','G25'),0)
             self.assertEqual(book.value('Messages & costs','C43'),'')
 
+    def test_native_chart_caches_and_seven_day_range_are_populated(self):
+        from zipfile import ZipFile
+        from xml.etree import ElementTree as E
+        with patch.dict(os.environ,{'CARECONNECT_TEST_DATABASE':'true'}):
+            first=fixtures.run('seed30')
+            try:
+                with tempfile.TemporaryDirectory() as directory:
+                    path=Path(directory)/'chart-report.xlsx';excel.build_report(self.snapshot(),path)
+                    with ZipFile(path) as archive:
+                        charts=[n for n in archive.namelist() if '/charts/chart' in n and n.endswith('.xml')]
+                        self.assertEqual(len(charts),7)
+                        ns={'c':excel.CNS}
+                        daily=E.fromstring(archive.read(charts[0]))
+                        self.assertTrue(all(e.get('val')=='7' for e in daily.findall('.//c:ptCount',ns)))
+                        self.assertTrue(all(e.text.endswith('137') for e in daily.findall('.//c:f',ns)))
+                        self.assertEqual(len(daily.findall('.//c:numCache/c:pt',ns)),14)
+                        for name in charts:
+                            chart=E.fromstring(archive.read(name))
+                            self.assertGreater(len(chart.findall('.//c:pt',ns)),0)
+                            self.assertTrue(all(e.get('val')=='0' for e in chart.findall('.//c:valAx/c:scaling/c:min',ns)))
+            finally:fixtures.run('cleanup',first['run_id'])
+
     def test_fixture_batches_30_then_20_and_scoped_cleanup(self):
         with self.assertRaises(PermissionError):fixtures.run('seed30')
         with patch.dict(os.environ,{'CARECONNECT_TEST_DATABASE':'true'}):
@@ -363,6 +385,79 @@ class Phase3Tests(unittest.TestCase):
         self.assertEqual(self.rows('SELECT COUNT(*) FROM whatsapp_receipts')[0][0],2)
         with patch.object(phase3_manage,'get_connection',base.connect),patch('builtins.print'),patch('sys.argv',['phase3_manage.py','retention','--apply']):phase3_manage.main()
         self.assertEqual(self.rows('SELECT message_hash FROM whatsapp_receipts'),[('recent',)])
+
+    def test_full_second_batch_covers_every_report_input_and_cleans_all_extra_records(self):
+        baseline=data.snapshot(self.today-timedelta(days=29),self.today,excluded={'6500000001'})
+        with patch.dict(os.environ,{'CARECONNECT_TEST_DATABASE':'true'}):
+            first=fixtures.run('seed30')
+            full=fixtures.run('add20',first['run_id'],full_cases=True)
+            try:
+                expected=full['expected30d'];previous=full['expected_previous30d']
+                self.assertEqual(expected['caregivers_active'],50)
+                self.assertEqual(expected['new_users'],36)
+                self.assertEqual(expected['returning_users'],11)
+                self.assertEqual(expected['unknown_first_seen_active'],3)
+                self.assertEqual(expected['permitted_profile_rows'],47)
+                self.assertEqual(expected['profile_accepted'],1);self.assertEqual(expected['profile_edited'],1);self.assertEqual(expected['profile_rejected'],1)
+                report=data.snapshot(self.today-timedelta(days=29),self.today,excluded={'6500000001'})
+                self.assertEqual(report['periods'][1][1],50)
+                self.assertEqual(report['periods'][1][2]-baseline['periods'][1][2],36)
+                self.assertEqual(report['periods'][1][3],11)
+                self.assertEqual(report['periods'][0][1],previous['caregivers_active'])
+                self.assertEqual(len(report['caregivers']),47)
+                self.assertTrue(all(value>0 for row in report['heat'] for value in row))
+                self.assertTrue(all(value>0 for row in report['buddy_heat'] for value in row))
+                with tempfile.TemporaryDirectory() as directory:
+                    path=Path(directory)/'coverage.xlsx';excel.build_report(report,path);book=excel.Book(path)
+                    cells={('Dashboard','B8'):'caregivers_active',('Services','D8'):'ai_chat_entries',('Services','D9'):'resource_visits',('Services','D10'):'completed_searches',('Services','D11'):'matching_previews',('Services','D13'):'applications_submitted',('Services','D14'):'profile_accepted',('Services','D15'):'profile_edited',('Services','D16'):'profile_rejected',('Buddy programme','C20'):'requests_sent',('Buddy programme','C21'):'accepted',('Buddy programme','C22'):'declined',('Buddy programme','C23'):'pending',('Buddy programme','C29'):'searches_no_preview',('Caregiver summary','C6'):'permitted_profile_rows',('Caregiver summary','J6'):'summary_user_days',('Messages & costs','C8'):'received_messages',('Messages & costs','C9'):'outgoing_messages',('Messages & costs','C10'):'delivered_messages',('Messages & costs','C11'):'failed_messages',('Messages & costs','C12'):'read_messages',('Messages & costs','C13'):'unconfirmed_sends'}
+                    for (sheet,address),key in cells.items():self.assertEqual(book.value(sheet,address),expected.get(key,0),(sheet,address,key))
+                    for address,key in [('D12','buddy_application_started'),('D24','consent_granted'),('D25','consent_declined'),('D26','consent_withdrawn')]:self.assertEqual(book.value('Services',address),expected[key])
+                    for address,key in [('C8','buddy_application_started'),('C9','applications_submitted'),('C10','application_approved'),('C11','application_rejected'),('C12','application_pending')]:self.assertEqual(book.value('Buddy programme',address),expected[key])
+                    self.assertEqual(book.value('Buddy programme','C15'),1)
+                    self.assertAlmostEqual(book.value('Buddy programme','C26'),17/50)
+                    for i in range(4):self.assertEqual(book.value('Services',f'C{38+i}'),expected['resource_categories'][str(i+1)])
+                    self.assertEqual(book.value('Services','C8'),previous['ai_chat_entries'])
+                    for i,category in enumerate(['service','utility','marketing','authentication']):self.assertEqual(book.value('Messages & costs',f'C{30+i}'),expected['billable_categories'][category])
+                    self.assertEqual(book.value('Messages & costs','C36'),0)
+                    self.assertEqual(book.value('Messages & costs','G25'),'')
+                    self.assertEqual(book.value('Messages & costs','C43'),'')
+                    for i in range(8,60):
+                        row=[book.value('AI usage',f'{column}{i}') for column in 'BCDEFGHI']
+                        if not row[0]:continue
+                        key=' | '.join(row[:3]);entry=expected['ai_groups'][key]
+                        self.assertEqual(row[3:],[entry.get(k,0) for k in ['requests','input_tokens','cached_input_tokens','output_tokens','unknown_calls']])
+                        for column,value in [('J',1),('K',0.1),('L',2)]:book.set('AI usage',f'{column}{i}',value)
+                    book.memo.clear()
+                    self.assertEqual(book.value('Messages & costs','G25'),'','Unknown calls must keep the total unavailable even with all rates entered')
+            finally:fixtures.run('cleanup',first['run_id'])
+        for table in ['reporting_ai','reporting_activity','reporting_facts','reporting_outgoing','reporting_statuses','whatsapp_receipts','match_requests','support_buddy_applications']:
+            self.assertEqual(self.rows(f'SELECT COUNT(*) FROM {table}')[0][0],0,table)
+        self.assertEqual(self.rows('SELECT COUNT(*) FROM users')[0][0],3)
+
+    def test_known_billing_categories_remain_visible_when_another_delivery_is_unclassified(self):
+        for i in range(2):self.rows("INSERT INTO reporting_outgoing(attempt_id,provider_id,kind,outcome) VALUES(%s,%s,'text','accepted')",(str(i),'billing-'+str(i)))
+        self.rows("INSERT INTO reporting_statuses(provider_id,status,occurred_at,category,billable,pricing_model) VALUES('billing-0','delivered',CURRENT_TIMESTAMP,'utility',true,'PMP'),('billing-1','delivered',CURRENT_TIMESTAMP,NULL,NULL,NULL)")
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'billing.xlsx';excel.build_report(self.snapshot(),path);book=excel.Book(path)
+            self.assertEqual(book.value('Messages & costs','C31'),1)
+            self.assertEqual(book.value('Messages & costs','C36'),1)
+            book.set('Controls','C15',0.05);book.memo.clear()
+            self.assertEqual(book.value('Messages & costs','E31'),0.05)
+            self.assertEqual(book.value('Messages & costs','E34'),'')
+
+    def test_custom_31_day_comparison_preserves_all_62_daily_rows(self):
+        start=self.today-timedelta(days=30);previous_last=start-timedelta(days=1)
+        for stamp in [previous_last,self.today]:
+            from datetime import time
+            self.rows("INSERT INTO usage_events(sender,event_type,occurred_at) VALUES('synthetic-a','ai_chat_started',%s)",(datetime.combine(stamp,time(12),data.SGT),))
+        report=data.snapshot(start,self.today,excluded={'6500000001'})
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'custom31.xlsx';excel.build_report(report,path);book=excel.Book(path)
+            self.assertEqual(book.value('Sample data','B43'),excel.serial(previous_last))
+            self.assertEqual(book.value('Sample data','B44'),excel.serial(start))
+            self.assertEqual(book.value('Sample data','B74'),excel.serial(self.today))
+            self.assertEqual(book.value('Services','C8'),1)
+            self.assertEqual(book.value('Services','D8'),1)
 
     def test_preflight_rolls_back_and_preserves_ids(self):
         import phase3_manage

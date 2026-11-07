@@ -202,7 +202,7 @@ class Book:
             if dim is not None:dim.set('ref',f'A1:Z{maximum}')
             self.parts[self.paths[sheet]]=E.tostring(root,encoding='utf-8',xml_declaration=True)
         for path,data in list(self.parts.items()):
-            if not re.fullmatch(r'xl/charts/chart\d+\.xml',path):continue
+            if not re.fullmatch(r'xl/(?:drawings/)?charts/chart\d+\.xml',path):continue
             root=E.fromstring(data)
             chart_numbers=[];fractional=False
             for reference in list(root.iter('{'+CNS+'}numRef'))+list(root.iter('{'+CNS+'}strRef')):
@@ -263,13 +263,40 @@ def build_report(data,path):
     for offset in range(days*2):
         d=data['previous']+timedelta(days=offset);counts=data['daily'][d]
         counts['searches']=counts['search_preview']+counts['search_no_preview']
-        row=13+offset if offset<days else 43+offset-days
+        current_start=44 if days==31 else 43
+        row=13+offset if offset<days else current_start+offset-days
         values=[d,d.strftime('%d %b')]+[counts[k] if k else None for k in source_keys]
         values[6]=counts['searches'];values[7]=counts['search_preview']
         # Do not misrepresent uncovered history as complete zeroes.
         if d<data['coverage'].astimezone(SGT).date():
             for i in [2,3,6,7,17,18,19,21,22,23,24]:values[i]=None
         book.row('Sample data',row,values)
+        if row==74:
+            for column in range(2,27):
+                cell=book.cell('Sample data',f'{col(column)}74');source=book.cell('Sample data',f'{col(column)}73')
+                if source.get('s'):cell.set('s',source.get('s'))
+    if days==31:
+        # Both periods have 31 days. Move the current block down one row instead
+        # of overwriting the final day of the preceding comparison period.
+        pattern=r"('Sample data'!)(\$?[A-Z]+\$?)(\d+)(?::(\$?[A-Z]+\$?)(\d+))?"
+        def shift(match):
+            prefix,column,first,last_column,last=match.groups();first=int(first)
+            if last is not None:
+                last=int(last)
+                if first==13 and last==42:return f'{prefix}{column}13:{last_column}43'
+                if first==43 and last==73:return f'{prefix}{column}44:{last_column}74'
+            elif 43<=first<=73:return f'{prefix}{column}{first+1}'
+            return match.group(0)
+        for cell in book.cells.values():
+            formula=cell.find(tag('f'))
+            if formula is not None:formula.text=re.sub(pattern,shift,formula.text)
+        for name,raw in list(book.parts.items()):
+            if name.startswith('xl/tables/') and name.endswith('.xml'):
+                root=E.fromstring(raw)
+                if root.get('ref')=='B12:Z73':
+                    root.set('ref','B12:Z74');af=root.find(tag('autoFilter'))
+                    if af is not None:af.set('ref','B12:Z74')
+                    book.parts[name]=E.tostring(root,encoding='utf-8',xml_declaration=True)
     for row,heat in [(81,data['heat']),(92,data['buddy_heat'])]:
         for i,values in enumerate(heat):book.row('Sample data',row+i,values,3)
     for i in range(4):book.set('Sample data',f'C{122+i}',data['categories'][str(i+1)])
@@ -342,6 +369,9 @@ def build_report(data,path):
                 if af is not None:af.set('ref',root.get('ref'))
                 book.parts[name]=E.tostring(root,encoding='utf-8',xml_declaration=True)
     book.set('AI usage','B4','Provider-reported tokens. Fill amber rates in USD per million tokens. Unknown calls keep cost unavailable.')
+    book.set('AI usage','F7','Known input tokens')
+    book.set('AI usage','G7','Known cached input')
+    book.set('AI usage','H7','Known output tokens')
     for index_,feature in enumerate(['AI Chat','Translation','Menu routing','Profile extraction','Language detection']):
         items=[(key,v) for key,v in ai_groups.items() if groups[key[0]]==feature]
         summary=[sum(v[j] for _,v in items) for j in range(4)]
@@ -363,21 +393,36 @@ def build_report(data,path):
         item=by_message.setdefault(identifier,{'category':set(),'billable':set()})
         if category:item['category'].add(category)
         if billable is not None and pricing_model=='PMP':item['billable'].add(billable)
-    billing_complete=all(len(v['category'])==1 and len(v['billable'])==1 for v in by_message.values())
+    known_messages=0
     bill_counts={key:0 for key in ['service','utility','marketing','authentication']}
     for item in by_message.values():
         if len(item['category'])==1 and len(item['billable'])==1:
+            known_messages+=1
             if next(iter(item['billable'])):bill_counts[next(iter(item['category']))]+=1
     delivered=sum(data['daily'][d]['delivered'] for d in data['daily'] if d>=start)
-    billing_complete=billing_complete and len(by_message)==delivered
+    unknown_billing=max(0,delivered-known_messages)
     for i,key in enumerate(['service','utility','marketing','authentication']):
-        book.set('Sample data',f'C{116+i}',bill_counts[key] if billing_complete else None)
-        if billing_complete and bill_counts[key]==0:book.set('Messages & costs',f'E{30+i}',0)
+        book.set('Sample data',f'C{116+i}',bill_counts[key])
+        row=30+i
+        book.formula('Messages & costs',f'E{row}',f'IF(ISNUMBER(C{row}),IF(C{row}=0,0,IF(AND(ISNUMBER(D{row}),D{row}>=0),C{row}*D{row},"")),"")')
+    book.set('Messages & costs','B36','Unclassified delivered')
+    book.set('Messages & costs','C36',unknown_billing)
+    book.formula('Messages & costs','E34','IF(AND(C36=0,COUNT(E30:E33)=4),SUM(E30:E33),"")')
     book.set('Messages & costs','B28','Confirmed billable messages by category')
     book.set('Sample data','B113','Confirmed billable messages. Free and unknown classifications are not billable counts.')
-    book.set('Messages & costs','B35','Rates must match billing category and market. Missing classifications keep costs blank.')
+    book.set('Messages & costs','B35','Known categories are shown. Unclassified delivery or missing rates keep the total blank.')
     # No delivered messages means known zero charges, irrespective of rate placeholders.
     if delivered==0:
         for row in range(30,34):book.set('Messages & costs',f'E{row}',0)
+    # Bind the native daily chart to the actual requested day count, including
+    # its cached points. A 7-day report must not leave 24 empty date slots.
+    for part,raw in list(book.parts.items()):
+        if not re.fullmatch(r'xl/(?:drawings/)?charts/chart\d+\.xml',part):continue
+        root=E.fromstring(raw);changed=False
+        for reference in root.iter('{'+CNS+'}f'):
+            if reference.text and "'Sample data'!" in reference.text:
+                replacement=re.sub(r'(\$?[BCD]\$?131:\$?[BCD]\$?)161$',lambda m:m.group(1)+str(130+days),reference.text)
+                if replacement!=reference.text:reference.text=replacement;changed=True
+        if changed:book.parts[part]=E.tostring(root,encoding='utf-8',xml_declaration=True)
     book.save(path)
     return path

@@ -27,9 +27,11 @@ def expected(records,days,anchor):
             'received_messages':len(selected),'outgoing_messages':len(selected),'delivered_messages':len(selected),'read_messages':sum(r['read'] for r in selected),
             'report_ids_in_period':sorted(r['report_id'] for r in selected)}
 
-def run(action,run_id=None):
+def run(action,run_id=None,full_cases=False):
     if os.getenv('CARECONNECT_TEST_DATABASE','').lower()!='true':
         raise PermissionError('Refusing fixture writes: mark the authorised test target CARECONNECT_TEST_DATABASE=true first.')
+    if action not in {'seed30','add20','cleanup'} or (full_cases and action!='add20'):
+        raise ValueError('Full coverage cases belong to the second 20-record batch.')
     connection=get_connection()
     try:
         with connection:
@@ -54,11 +56,14 @@ def run(action,run_id=None):
                     for table in ['reporting_activity','reporting_facts']:
                         cur.execute(f'DELETE FROM {table} WHERE report_id=ANY(%s)',(ids,))
                     cur.execute('DELETE FROM usage_events WHERE sender=ANY(%s)',(senders,))
-                    cur.execute('DELETE FROM reporting_ai WHERE id=ANY(%s)',([r['ai_id'] for r in records],))
-                    cur.execute('DELETE FROM reporting_statuses WHERE provider_id=ANY(%s)',([r['provider_id'] for r in records],))
-                    cur.execute('DELETE FROM reporting_outgoing WHERE attempt_id=ANY(%s)',([r['outgoing_id'] for r in records],))
-                    cur.execute('DELETE FROM whatsapp_receipts WHERE message_hash=ANY(%s)',([r['receipt_hash'] for r in records],))
-                    cur.execute('DELETE FROM match_requests WHERE id=ANY(%s) AND requester=ANY(%s)',([r['request_id'] for r in records],senders))
+                    ai_ids=[c['id'] for r in records for c in r.get('ai_calls',[{'id':r['ai_id']}])]
+                    messages=[m for r in records for m in r.get('messages',[{'provider':r['provider_id'],'attempt':r['outgoing_id'],'receipt':r['receipt_hash']}])]
+                    request_ids=[q['id'] for r in records for q in r.get('requests',[{'id':r['request_id']}])]
+                    cur.execute('DELETE FROM reporting_ai WHERE id=ANY(%s)',(ai_ids,))
+                    cur.execute('DELETE FROM reporting_statuses WHERE provider_id=ANY(%s)',([m['provider'] for m in messages],))
+                    cur.execute('DELETE FROM reporting_outgoing WHERE attempt_id=ANY(%s)',([m['attempt'] for m in messages],))
+                    cur.execute('DELETE FROM whatsapp_receipts WHERE message_hash=ANY(%s)',([m['receipt'] for m in messages],))
+                    cur.execute('DELETE FROM match_requests WHERE id=ANY(%s) AND requester=ANY(%s)',(request_ids,senders))
                     cur.execute('DELETE FROM admin_review_events WHERE application_id=ANY(%s)',([r['application_id'] for r in records],))
                     cur.execute('DELETE FROM support_buddy_drafts WHERE sender=ANY(%s)',(senders,))
                     cur.execute('DELETE FROM support_buddy_applications WHERE id=ANY(%s) AND sender=ANY(%s)',([r['application_id'] for r in records],senders))
@@ -103,8 +108,13 @@ def run(action,run_id=None):
                     for state in ['delivered']+(['read'] if read else []):
                         cur.execute("INSERT INTO reporting_statuses(provider_id,status,occurred_at,category,billable,pricing_model) VALUES(%s,%s,%s,'service',false,'PMP')",(provider,state,stamp))
                     manifest['records'].append(dict(sender=sender,report_id=person,date=str(d),request_status=outcome,preview=preview,read=read,input_tokens=inp,cached_tokens=cached,output_tokens=out,ai_id=ai_id,provider_id=provider,outgoing_id=attempt,receipt_hash=receipt,application_id=app_id,request_id=request_id))
-                manifest['expected7d']=expected(manifest['records'],7,anchor)
-                manifest['expected30d']=expected(manifest['records'],30,anchor)
+                expected_fn=expected
+                if full_cases:
+                    from reporting_fixture_cases import enrich,expected_full
+                    enrich(cur,manifest,anchor,now);expected_fn=expected_full
+                manifest['expected7d']=expected_fn(manifest['records'],7,anchor)
+                manifest['expected30d']=expected_fn(manifest['records'],30,anchor)
+                if full_cases:manifest['expected_previous30d']=expected_fn(manifest['records'],30,anchor-timedelta(days=30))
                 cur.execute('INSERT INTO reporting_fixture_runs(id,manifest) VALUES(%s,%s::jsonb) ON CONFLICT(id) DO UPDATE SET manifest=EXCLUDED.manifest',(run_id,json.dumps(manifest)))
                 # Explicit test coverage does not change the real tracking-start marker.
                 cur.execute("INSERT INTO reporting_settings(key,value) VALUES('synthetic_test_start',%s) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",(datetime.combine(anchor-timedelta(days=60),time.min,SGT),))
@@ -115,7 +125,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['seed30','add20','cleanup']);parser.add_argument('--run-id')
     parser.add_argument('--manifest',required=True,type=Path,help='Local JSON file containing the exact inputs and expected totals')
-    args=parser.parse_args();result=run(args.action,args.run_id)
+    parser.add_argument('--full-cases',action='store_true',help='Enrich the second batch with report coverage and privacy boundary cases')
+    args=parser.parse_args();result=run(args.action,args.run_id,args.full_cases)
     args.manifest.parent.mkdir(parents=True,exist_ok=True);args.manifest.write_text(json.dumps(result,indent=2))
     print(f"Fixture run {result['run_id']}: {len(result['records'])} synthetic caregivers. Manifest saved.")
 

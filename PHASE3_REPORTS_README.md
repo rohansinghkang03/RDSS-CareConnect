@@ -62,11 +62,13 @@ The fixture loader refuses to write unless the operator explicitly sets `CARECON
 
 1. `python reporting_fixtures.py seed30 --manifest reporting_test_manifests/batch30.json`
 2. Save the printed run ID. This creates 30 synthetic caregiver records with dates distributed across the last 30 days. Request **7** through WhatsApp and send the returned Excel file for reconciliation. There should be **7 fixture caregivers active** in this period; all 30 permitted fixture profiles appear in the summary, with the others having zero activity for the period.
-3. After reviewing that first attachment, run `python reporting_fixtures.py add20 --run-id RUN_ID --manifest reporting_test_manifests/batch50.json`.
-4. Request **30** through WhatsApp and send that attachment. There should now be **50 fixture caregivers active** in the 30-day period. The original records are retained for this second stage, rather than replaced.
+3. After reviewing that first attachment, run `python reporting_fixtures.py add20 --run-id RUN_ID --full-cases --manifest reporting_test_manifests/batch50.json`. The full-case mode adds the 20 people plus explicitly recorded historical interactions and coverage cases; it does not replace the first 30 people.
+4. Request **30** through WhatsApp and send that attachment. There should now be **50 fixture caregivers active** and **47 permitted individual profile rows**. The other three are intentionally declined, withdrawn or older-permission cases. The original records are retained for this second stage, rather than replaced. All eight AI features, all weekday/time-band heatmap cells, previous-period activity, known/unknown usage and message outcomes are exercised.
 5. Each manifest records exact IDs, dates, outcomes and tokens, plus independent expected 7/30-day fixture contributions. Existing records and administrator message traffic can contribute additional overall totals; compare fixture rows separately and account for the baseline rather than assuming every total must equal the fixture count.
 6. Check remaining fields: edited/accepted/rejected profile outcomes; withdrawal while preparing; unknown versus zero costs; mixed models; duplicate/late callbacks; date cutoffs; unauthorised/expired sessions; upload/send failure; more than 220 caregiver rows. These cases also have automated local coverage where implemented.
 7. After both attachment checks, run `python reporting_fixtures.py cleanup --run-id RUN_ID --manifest reporting_test_manifests/cleanup.json`. Cleanup deletes only records tied to that run's explicit manifest, preserving unrelated records. If the test crosses Singapore midnight, use fixed custom dates from the manifest anchor to keep the comparisons identical.
+
+Known billing categories remain visible when another delivery lacks billing metadata; the unclassified count is shown separately and the overall WhatsApp charge remains unavailable until complete. AI usage columns explicitly show known token subtotals, with incomplete-call counts alongside them. No missing usage is priced as zero.
 
 Do not enable test mode or seed fixtures on the hosted database without explicit target approval.
 
