@@ -145,6 +145,8 @@ def handle_profile_navigation(sender, text, state, original_text):
             update_user(sender, state='main_menu')
             return show_careconnect_menu(sender)
         if text == '5':
+            from handlers import track_usage_safely
+            track_usage_safely(sender,'ai_chat_started')
             update_user(sender, state='ai_chat')
             return profile_text(sender,
                 "You're chatting with CareConnect AI. 💜\n\nWhat's on your mind?\n\n"
@@ -153,7 +155,7 @@ def handle_profile_navigation(sender, text, state, original_text):
 
     if state == 'profiling_consent':
         if text == '1':
-            if profiles.get_profiling_consent(sender) != 'granted':
+            if not profiles.has_current_profile_permission(sender):
                 profiles.grant_profiling_consent(sender)
             return show_profile(sender,
                 'Your permission for AI-assisted profile suggestions has been recorded. 💜\n'

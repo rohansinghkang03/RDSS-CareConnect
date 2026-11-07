@@ -1,3 +1,4 @@
+from reporting_tracking import feature_call
 import hmac
 import os
 import re
@@ -63,6 +64,10 @@ PROFILING_CONSENT_PROMPT = (
     "the main menu, choose 6 (My profile), then 3 (Withdraw permission). "
     "Your profile will not be shared with another caregiver through "
     "this feature.\n\n"
+    "RDSS administrators may also download your approved profile and individual usage summary "
+    "for support planning. Reports use an internal ID and exclude your chat text and contact details. "
+    "Choosing Yes includes this reporting purpose for your existing approved profile and future approvals. "
+    "You can withdraw permission here; RDSS must also handle previously downloaded copies under its retention policy.\n\n"
     "1. Yes, enable profile suggestions\n"
     "2. No, thanks\n\n"
     "Withdrawing deletes profiling information, not your AI chat history.\n\n"
@@ -253,8 +258,9 @@ def admin_menu_reply():
         "RDSS Admin Panel 💜\n\n"
         "1. View pending applications\n"
         "2. Application summary\n"
-        "3. Log out\n\n"
-        "Reply with 1, 2 or 3. Type 'menu' to return here."
+        "3. Log out\n"
+        "4. Download statistics (Excel)\n\n"
+        "Reply with a number. Type 'menu' to return here."
     )
 
 
@@ -338,6 +344,9 @@ def handle_admin_message(sender, text, state):
             update_user(sender, state="main_menu")
         return "Admin access is not enabled for this WhatsApp number. Type 'menu' for the main menu."
     command = text.strip().lower()
+    reports_enabled=os.getenv('REPORTING_ENABLED','').lower()=='true'
+    if reports_enabled:
+        from reporting_auth import session_valid, login, logout
 
     if not ADMIN_PIN and (command == "admin login" or state.startswith("admin_")):
         if state.startswith("admin_"):
@@ -356,14 +365,39 @@ def handle_admin_message(sender, text, state):
         return admin_menu_reply()
 
     if state.startswith("admin_") and command == "admin logout":
+        if reports_enabled:logout(sender)
         update_user(sender, state="main_menu")
         return "You have been logged out."
 
     if state == "admin_pin":
+        if reports_enabled:
+            outcome=login(sender,text,ADMIN_PIN,ADMIN_PHONE_NUMBERS)
+            if outcome=='ok':
+                update_user(sender,state='admin_menu')
+                return 'Admin login successful. Your session lasts 30 minutes.\n\n'+admin_menu_reply()
+            if outcome=='locked':return "Too many incorrect attempts. Please wait 15 minutes. Type 'menu' to cancel."
+            return "Incorrect PIN. Try again or type 'menu'."
         if ADMIN_PIN and hmac.compare_digest(text.strip().encode("utf-8"), ADMIN_PIN.encode("utf-8")):
             update_user(sender, state="admin_menu")
             return "Admin login successful.\n\n" + admin_menu_reply()
         return "Incorrect PIN. Try again or type 'menu'."
+
+    if reports_enabled and state.startswith('admin_'):
+        if not session_valid(sender,ADMIN_PIN,ADMIN_PHONE_NUMBERS):
+            logout(sender)
+            update_user(sender,state='main_menu')
+            return "Your admin session has expired or changed. Type 'admin login' to sign in again."
+        if command=='report status':
+            from reporting_jobs import job_status
+            return job_status(sender)
+        if state=='admin_report_period':
+            from reporting_jobs import request_report
+            try:
+                reply=request_report(sender,text,ADMIN_PIN,ADMIN_PHONE_NUMBERS)
+            except ValueError as exc:
+                return str(exc)+"\n\nType 'menu' for the admin menu."
+            update_user(sender,state='admin_menu')
+            return reply
 
     if state == "admin_menu":
         if command == "1":
@@ -373,9 +407,17 @@ def handle_admin_message(sender, text, state):
         if command == "2":
             return admin_application_summary()
         if command == "3":
+            if reports_enabled:logout(sender)
             update_user(sender, state="main_menu")
             return "You have been logged out."
-        return "Please choose 1, 2 or 3.\n\n" + admin_menu_reply()
+        if command=='4':
+            if not reports_enabled:return 'Statistics are not enabled yet.\n\n'+admin_menu_reply()
+            update_user(sender,state='admin_report_period')
+            return ("CareConnect statistics\n\nReply 7 for the last 7 days, or 30 for the last 30 days.\n"
+                    "For custom dates (up to 31 days), enter DD-MM-YYYY DD-MM-YYYY.\n\n"
+                    "The Excel file includes administrator-only caregiver summaries. Keep downloaded copies private.\n"
+                    "Type 'menu' to return to the admin menu.")
+        return "Please choose an option.\n\n" + admin_menu_reply()
 
     if state == "admin_applications":
         if not list_admin_applications("pending", 1, 1)[0]:
@@ -796,7 +838,7 @@ def select_careconnect_language(sender, answer):
         from chatbot import client, MODEL
 
         try:
-            response = client.responses.create(
+            response = feature_call("Language detection", client.responses.create,
                 model=MODEL,
                 instructions=(
                     "You validate language selections for a caregiver "
@@ -846,7 +888,7 @@ def interpret_main_menu_intent(message):
     from chatbot import client, MODEL
 
     try:
-        response = client.responses.create(
+        response = feature_call("Menu routing", client.responses.create,
             model=MODEL,
             instructions=(
                 "Classify a caregiver's message for the RDSS CareConnect "
@@ -1361,6 +1403,10 @@ def _handle_message(sender, text):
                 )
 
         matches = find_matches(user)
+
+        if os.getenv('REPORTING_ENABLED','').lower()=='true':
+            from reporting_tracking import record_search
+            record_search(sender,bool(matches))
 
         if not matches:
             return buddy_unavailable_reply(sender, no_matches=True)

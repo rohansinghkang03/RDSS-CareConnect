@@ -134,7 +134,18 @@ def record_sharing_decision(sender, match_request_id, approved_summary=None):
         connection.close()
 
 
-PROFILING_CONSENT_VERSION = "careconnect-profiling-v1"
+PROFILING_CONSENT_VERSION = "careconnect-profiling-v2-reports"
+
+
+def has_current_profile_permission(sender):
+    connection=get_connection()
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT status,consent_version FROM caregiver_profiling_consent WHERE sender=%s",(sender,))
+                return cursor.fetchone()==('granted',PROFILING_CONSENT_VERSION)
+    finally:
+        connection.close()
 
 
 def get_profiling_consent(sender):

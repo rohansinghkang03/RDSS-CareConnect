@@ -36,3 +36,9 @@ database_postgres_ready.py
 # RDSS local-only files
 phase1_backups/
 phase2_backups/
+phase3_backups/
+# Reports contain linked caregiver information; never commit generated exports.
+CareConnectStatistics_*.xlsx
+!report_templates/CareConnectStatistics_Template.xlsx
+*.inspect.ndjson
+reporting_test_manifests/

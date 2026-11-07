@@ -1,3 +1,4 @@
+from reporting_tracking import feature_call
 import json
 import os
 import re
@@ -48,7 +49,7 @@ def remember_matching_language(sender, message):
         return
 
     try:
-        response = client.chat.completions.create(
+        response = feature_call('Language detection', client.chat.completions.create,
             model=MODEL,
             messages=[
                 {
@@ -109,7 +110,8 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
     timeout=30.0,
-    max_retries=1
+    # Avoid hidden billable retries; failures are recorded with unknown usage.
+    max_retries=0
 )
 
 
@@ -311,7 +313,7 @@ def ask_careconnect(sender, message):
             limit=10
         )
 
-        response = client.responses.create(
+        response = feature_call('AI Chat', client.responses.create,
             model=MODEL,
             instructions=CARECONNECT_INSTRUCTIONS,
             input=history
@@ -406,7 +408,7 @@ Output:
 """
 
     try:
-        response = client.responses.create(
+        response = feature_call('Matching preferences', client.responses.create,
             model=MODEL,
             instructions=instructions,
             input=message
@@ -498,7 +500,7 @@ The application handles confirmation separately.
     )
 
     try:
-        response = client.responses.create(
+        response = feature_call('Matching onboarding', client.responses.create,
             model=MODEL,
             instructions=instructions,
             input=context
@@ -573,7 +575,7 @@ Rules:
 """
 
     try:
-        response = client.responses.create(
+        response = feature_call('Confirmation', client.responses.create,
             model=MODEL,
             instructions=instructions,
             input=message
@@ -697,7 +699,7 @@ Return ONLY the adapted message.
     )
 
     try:
-        response = client.responses.create(
+        response = feature_call('Translation', client.responses.create,
             model=MODEL,
             instructions=instructions,
             input=context

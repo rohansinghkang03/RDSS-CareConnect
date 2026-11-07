@@ -45,6 +45,9 @@ def process_message(message):
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_lock(hashtextextended(%s, 301))", (sender,))
         try:
+            if os.getenv('REPORTING_ENABLED','').lower()=='true':
+                from reporting_tracking import record_activity
+                record_activity(sender,digest)
             reply = handle_message(sender, body.strip())
             send_message(sender, reply)
         except Exception:
@@ -81,6 +84,10 @@ def receive_message():
                 value = change.get('value', {})
                 if not isinstance(value, dict):
                     return 'Invalid payload', 400
+                if os.getenv('REPORTING_ENABLED','').lower()=='true':
+                    from reporting_tracking import record_status
+                    for status in value.get('statuses',[]):
+                        record_status(status)
                 for message in value.get('messages', []):
                     process_message(message)
     except (AttributeError, TypeError):
@@ -91,9 +98,36 @@ def receive_message():
     return 'EVENT_RECEIVED', 200
 
 
+@app.before_request
+def resume_reports():
+    # Lazy start avoids database access or threads during module import/preload.
+    from reporting_jobs import wake_worker
+    wake_worker()
+
+
 @app.get('/')
 def home():
     return 'RDSS CareConnect is running!', 200
+
+
+@app.get('/health')
+def health():
+    if os.getenv('REPORTING_ENABLED','').lower()!='true':
+        return {'status':'ok','reporting':'disabled'},200
+    from pathlib import Path
+    connection=None
+    try:
+        connection=get_connection()
+        with connection:
+            with connection.cursor() as cur:
+                cur.execute("SELECT 1 FROM reporting_settings WHERE key='phase3_v1'")
+                ready=cur.fetchone() is not None
+        ready=ready and (Path(__file__).parent/'report_templates'/'CareConnectStatistics_Template.xlsx').is_file()
+        return {'status':'ok' if ready else 'unavailable','reporting':'ready' if ready else 'unavailable'},200 if ready else 503
+    except Exception:
+        return {'status':'unavailable','reporting':'unavailable'},503
+    finally:
+        if connection:connection.close()
 
 
 if __name__ == '__main__':

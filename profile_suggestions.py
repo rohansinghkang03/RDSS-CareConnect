@@ -4,6 +4,7 @@ import json
 import re
 
 from chatbot import client, MODEL
+from reporting_tracking import feature_call
 from phase2_analytics import PROFILE_FIELDS
 
 
@@ -59,7 +60,7 @@ def generate_profile_suggestions(messages):
             "No messages eligible for privacy-conscious profile extraction"
         )
 
-    response = client.responses.create(
+    response = feature_call("Profile extraction", client.responses.create,
         model=MODEL,
         instructions=PROFILE_EXTRACTION_INSTRUCTIONS,
         input=json.dumps(safe_messages, ensure_ascii=False),
