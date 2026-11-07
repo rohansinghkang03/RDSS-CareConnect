@@ -12,12 +12,16 @@ PROFILE_STATES = {'profile_menu', 'profiling_consent', 'profile_review',
 
 
 def profile_text(sender, template, values=None):
+    from conversation_context import current,protect
     from handlers import caregiver_message, get_matching_language_example
     from profile_localization import MALAY_LANGUAGES, malay_profile_template
     values = values or {}
+    protect(*values.values())
     # Only the fixed template reaches the translation service.
     language = (get_matching_language_example(sender) or '').strip().casefold()
-    translated = malay_profile_template(template) if language in MALAY_LANGUAGES else None
+    context=current.get()
+    translated = malay_profile_template(template) if language in MALAY_LANGUAGES and (not context or context['style']=='standard') else None
+    if translated is not None and context:context['fixed_localized']=True
     if translated is None:
         translated = caregiver_message(sender, template)
     commands = re.findall(r"'(menu|profile)'", template)

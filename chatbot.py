@@ -20,7 +20,7 @@ _matching_language_cache = {}
 
 # Store only a short, validated language name, never the caregiver's message.
 # This is deliberately not a fixed language whitelist.
-_LANGUAGE_LABEL = re.compile(r"[A-Za-z][A-Za-z -]{0,59}\Z")
+_LANGUAGE_LABEL = re.compile(r"[A-Za-z][A-Za-z -]{0,79}\Z")
 
 # Brief confirmations are not reliable evidence of a language change.
 _SHORT_REPLIES = {
@@ -38,63 +38,24 @@ def _valid_language_label(value):
     if not _LANGUAGE_LABEL.fullmatch(value):
         return False
     # Language labels cannot be whole sentences or caregiver messages.
-    return len(value.split()) <= 5
+    return len(value.split()) <= 8
 
 
 def remember_matching_language(sender, message):
-    if not isinstance(message, str):
+    from conversation_ai import classify,save_style
+    if not isinstance(message,str) or not message.strip() or message.strip().isdigit() or message.strip().casefold() in _SHORT_REPLIES:
         return
-    message = message.strip()
-    if not message or message.isdigit() or message.casefold() in _SHORT_REPLIES:
-        return
-
-    try:
-        response = feature_call('Language detection', client.chat.completions.create,
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Identify the language the caregiver uses or explicitly asks "
-                        "you to use. You may identify ANY language, not a fixed list. "
-                        "Reply with exactly one JSON object containing two fields: "
-                        "language (an English-language name of the language or "
-                        "communication variety, such as Vietnamese, Burmese, "
-                        "Punjabi, Mandarin Chinese, or English with Singlish "
-                        "expressions) and confident (true or false). "
-                        "Use confident=false for ambiguous, very short, "
-                        "language-neutral or mixed-language messages without "
-                        "a clear preference. Respect explicit language-switch "
-                        "requests even when written in English. "
-                        "Do not infer English merely because you are uncertain. "
-                        "The language value must contain only Latin letters, "
-                        "spaces or hyphens, at most five words and 60 characters. "
-                        "Never include caregiver details, quotations, personal "
-                        "information, or message text in the language field. "
-                        "No Markdown, explanations or extra keys."
-                    )
-                },
-                {"role": "user", "content": message}
-            ]
-        )
-        result = json.loads((response.choices[0].message.content or "").strip())
-        if not isinstance(result, dict) or result.get("confident") is not True:
-            return
-        language = result.get("language")
-        if not _valid_language_label(language):
-            return
-        _matching_language_cache[sender] = language
-        try:
-            set_language_preference(sender, language)
-        except Exception as error:
-            print("Language preference save error:", type(error).__name__)
-    except Exception as error:
-        print("Language detection error:", type(error).__name__)
+    result=classify(message,'language_detection',{},allow_choices=False)
+    if result and result['language']:
+        set_language_preference(sender,result['language'])
+        save_style(sender,result['style'])
+        _matching_language_cache[sender]=result['language']
 
 
 def get_matching_language_example(sender, fallback=""):
     try:
-        language = get_language_preference(sender)
+        from conversation_ai import canonical_language
+        language = canonical_language(get_language_preference(sender))
         if _valid_language_label(language):
             _matching_language_cache[sender] = language
             return language
@@ -128,36 +89,20 @@ rather than a close friend using exaggerated slang.
 
 SINGLISH AND INFORMAL LANGUAGE
 
-- Understand Singlish, slang and informal expressions.
-- Do not automatically imitate the caregiver's slang.
-- Use natural Singaporean English when appropriate.
-- Prefer standard conversational English with subtle local warmth.
-- Avoid exaggerated Singlish and unnecessary sentence particles.
-- Never use expressions such as "correct anot", "can anot",
-  "aiyo bro", "wah bro" or "can lah" in CareConnect's replies.
-- Do not address caregivers as "bro" unless explicitly requested.
-- Avoid sounding overly familiar, sarcastic or dismissive.
-- Do not use slang merely to demonstrate cultural familiarity.
-
-PREFERRED EXAMPLES
-
-Instead of "Correct anot?"
-Say "Does that sound right to you?"
-
-Instead of "Aiyo bro, damn shag sia."
-Say "That sounds really exhausting."
-
-Instead of "Can lah, no problem."
-Say "Of course, we can do that."
-
-Instead of "Wah, that's tough sia."
-Say "That sounds like a difficult situation."
+- Match the caregiver's language, formality and natural conversational style.
+- If they write informal Malay mixed with English, reply in natural informal
+  Singaporean Malay and English. Understand aku, nak, dah, je, takpe, hari2.
+- If they use Singlish, respond in natural Singlish, without forced particles.
+- Match casual wording without mimicking distress, profanity or stereotypes.
+- Do not become overly familiar or address them as bro unless they use it for you.
+- Use clear, direct wording for consent, privacy, safety and confirmations.
+- Numbers and short acknowledgements preserve the established language/style.
 
 OTHER LANGUAGES
 
 - Apply the same warm, respectful and approachable tone
   in every language.
-- Understand informal language without unnecessarily imitating it.
+- Respond naturally in the same informal or formal register as the caregiver.
 - Preserve the caregiver's intended meaning.
 - Translate availability categories accurately.
 - Morning means morning.
@@ -278,6 +223,10 @@ RDSS AND SUPPORT BUDDIES
   availability has been confirmed by the system.
 - You are an AI assistant, not a human Support Buddy.
 - Do not promise that a caregiver will receive a match.
+- Do not claim you saved, noted down, updated or shared a profile/preference.
+  The application separately asks for consent and approval before profile saving.
+- You can understand requests for profile, menu, resources and status; do not
+  invent buttons, saved changes, report results or completed operations.
 - Do not invent typical caregiver availability hours.
 - If relevant, explain that individual schedules vary.
 
@@ -300,6 +249,13 @@ Be natural, concise, supportive and respectful.
 """
 
 
+def communication_instructions():
+    from conversation_context import current,target
+    context=current.get()
+    if not context or not context['language']:return ''
+    return '\nEstablished response language and style: '+target()+'. Preserve this on short/neutral replies. Match the latest substantive message when it clearly changes language.\n'
+
+
 def ask_careconnect(sender, message):
     try:
         save_conversation_message(
@@ -315,11 +271,14 @@ def ask_careconnect(sender, message):
 
         response = feature_call('AI Chat', client.responses.create,
             model=MODEL,
-            instructions=CARECONNECT_INSTRUCTIONS,
-            input=history
+            instructions=CARECONNECT_INSTRUCTIONS + communication_instructions(),
+            input=history,
+            store=False
         )
 
         reply = response.output_text
+        if not isinstance(reply,str) or not reply.strip():
+            raise ValueError('Empty AI reply')
 
         save_conversation_message(
             sender,
@@ -411,7 +370,8 @@ Output:
         response = feature_call('Matching preferences', client.responses.create,
             model=MODEL,
             instructions=instructions,
-            input=message
+            input=message,
+            store=False
         )
 
         data = json.loads(response.output_text)
@@ -455,7 +415,7 @@ Output:
 
 
 def generate_onboarding_reply(message, support_type=None, availability=None):
-    instructions = CARECONNECT_INSTRUCTIONS + """
+    instructions = CARECONNECT_INSTRUCTIONS + communication_instructions() + """
 You are guiding a caregiver through finding a human Support Buddy.
 
 Make this feel like a genuine, supportive conversation,
@@ -503,7 +463,8 @@ The application handles confirmation separately.
         response = feature_call('Matching onboarding', client.responses.create,
             model=MODEL,
             instructions=instructions,
-            input=context
+            input=context,
+            store=False
         )
 
         reply = response.output_text.strip()
@@ -578,7 +539,8 @@ Rules:
         response = feature_call('Confirmation', client.responses.create,
             model=MODEL,
             instructions=instructions,
-            input=message
+            input=message,
+            store=False
         )
 
         result = json.loads(response.output_text)
@@ -599,97 +561,21 @@ def adapt_message_language(message, caregiver_message):
 
     The original message remains the source of truth.
     """
-    instructions = """
-
-CARECONNECT COMMUNICATION STANDARD
-
-CareConnect represents a Singapore-based caregiver support community.
-
-Maintain a warm, respectful, approachable and professional tone.
-
-Think of a friendly, empathetic colleague in a Singapore office,
-rather than a close friend using exaggerated slang.
-
-SINGLISH AND INFORMAL LANGUAGE
-
-- Understand Singlish, slang and informal expressions.
-- Do not automatically imitate the caregiver's slang.
-- Use natural Singaporean English when appropriate.
-- Prefer standard conversational English with subtle local warmth.
-- Avoid exaggerated Singlish and unnecessary sentence particles.
-- Never use expressions such as "correct anot", "can anot",
-  "aiyo bro", "wah bro" or "can lah" in CareConnect's replies.
-- Do not address caregivers as "bro" unless explicitly requested.
-- Avoid sounding overly familiar, sarcastic or dismissive.
-- Do not use slang merely to demonstrate cultural familiarity.
-
-PREFERRED EXAMPLES
-
-Instead of "Correct anot?"
-Say "Does that sound right to you?"
-
-Instead of "Aiyo bro, damn shag sia."
-Say "That sounds really exhausting."
-
-Instead of "Can lah, no problem."
-Say "Of course, we can do that."
-
-Instead of "Wah, that's tough sia."
-Say "That sounds like a difficult situation."
-
-OTHER LANGUAGES
-
-- Apply the same warm, respectful and approachable tone
-  in every language.
-- Understand informal language without unnecessarily imitating it.
-- Preserve the caregiver's intended meaning.
-- Translate availability categories accurately.
-- Morning means morning.
-- Afternoon means afternoon.
-- Evening means evening or nighttime, not afternoon.
-- Flexible means no fixed preferred time.
-- When a time expression is ambiguous, avoid guessing.
-
-WHATSAPP STYLE
-
-- Keep replies concise and conversational.
-- Use plain text without Markdown or bold formatting.
-- Avoid excessive emojis and exclamation marks.
-- Do not sound like a corporate announcement.
-- Do not sound like a close friend teasing the caregiver.
-- Be reassuring without becoming overly sentimental.
-
-You adapt CareConnect WhatsApp messages into the language
-and communication style used by a caregiver.
-
-Support any language you can reliably understand.
-
-This includes informal language, dialects, slang,
-romanised writing and mixed-language communication.
-
-RULES
-
-- Preserve the original meaning exactly.
-- Do not add or remove instructions.
-- Do not invent information.
-- Do not change names, identifiers or phone numbers.
-- Do not change menu option numbers.
-- Preserve the number and order of choices.
-- Preserve all matching preferences and availability details.
-- Do not change whether a match is available.
-- Do not promise that a connection request was accepted.
-- Do not add medical advice.
-- Do not change URLs.
-- Never use Markdown, bold formatting or asterisks.
-- Use plain text and natural WhatsApp line breaks.
-- Keep messages concise and easy to understand.
-- Match the caregiver's language and level of formality.
-- If the caregiver uses mixed languages, adapt naturally.
-- If the caregiver's language cannot be determined,
-  return the original message unchanged.
-
-Return ONLY the adapted message.
+    instructions = CARECONNECT_INSTRUCTIONS + """
+You adapt FIXED CareConnect interface text. This is translation/presentation, not AI Chat.
+The supplied interface text is the source of truth. Preserve every instruction,
+privacy warning, condition, negation, status and menu choice. Never add advice,
+claims, facts, services, URLs or actions. Never change a name, date or identifier.
+Keep every __CC_...__ / __PROFILE_...__ placeholder EXACTLY once, unchanged.
+Preserve ALL numbered options in the same order, with the same actions and numbers.
+Preserve literal commands such as 'menu', 'profile', 'my status' and 'language'.
+Translate ALL notices, validation errors, cancellations, headings and navigation.
+Use the requested language/style even when the message being translated is English.
+Do not translate text inside protected placeholders. No Markdown/code fences.
+Return ONLY the adapted interface text. If unable, return the source unchanged.
 """
+    from conversation_context import target
+    caregiver_message=target(caregiver_message)
 
     context = (
         "Caregiver's language example:\n"
@@ -702,7 +588,8 @@ Return ONLY the adapted message.
         response = feature_call('Translation', client.responses.create,
             model=MODEL,
             instructions=instructions,
-            input=context
+            input=context,
+            store=False
         )
 
         adapted = response.output_text.strip()
@@ -721,12 +608,23 @@ def safe_adapt_message(message, caregiver_message, required_text=None):
     Adapt a message while protecting important matching details.
     Return the original if validation fails.
     """
+    from conversation_context import current,protect
+    context=current.get()
+    if context and context['defer']:
+        protect(required_text)
+        return message
     adapted = adapt_message_language(message, caregiver_message)
 
     if not adapted:
         return message
 
     if required_text and required_text not in adapted:
+        return message
+    markers=re.findall(r'__(?:CC|PROFILE)_[A-Za-z0-9_]+__',message)
+    if any(adapted.count(marker)!=message.count(marker) for marker in markers):
+        return message
+    commands=re.findall(r"'(?:menu|profile|language|status|my status|back|cancel|application status|requests|request [0-9]+|accept [0-9]+|decline [0-9]+)'",message)
+    if any(command not in adapted for command in commands):
         return message
 
     original_options = [

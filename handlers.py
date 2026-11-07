@@ -4,6 +4,7 @@ import os
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from conversation_context import protect
 
 from chatbot import ask_careconnect, extract_matching_preferences, generate_onboarding_reply, interpret_confirmation, safe_adapt_message, remember_matching_language, get_matching_language_example
 from dotenv import load_dotenv
@@ -130,6 +131,8 @@ def registration_prompt(step):
 def next_registration_step(draft):
     for step, field, _ in REGISTRATION_FIELDS:
         value = draft.get(field)
+        if field in ('full_name','display_name','introduction'):
+            protect(value)
         if value is None or (field not in ("display_name", "introduction") and not value):
             return step
     return "review"
@@ -143,6 +146,8 @@ def registration_review(sender):
     lines = ["Review your Support Buddy application", ""]
     for _, field, label in REGISTRATION_FIELDS:
         value = draft.get(field)
+        if field in ('full_name','display_name','introduction'):
+            protect(value)
         if field == "display_name" and value == "":
             value = "Support Buddy (no display name chosen)"
         elif field == "introduction" and value == "":
@@ -758,6 +763,11 @@ def caregiver_message(sender, message, required_text=None):
     English messages are returned without an OpenAI call.
     Translation failures fall back to the original message.
     """
+    from conversation_context import current
+    context=current.get()
+    if context and context['defer']:
+        protect(required_text)
+        return message
     language = get_matching_language_example(sender)
 
     if not language or language.strip().lower() == "english":
@@ -773,6 +783,8 @@ def caregiver_message(sender, message, required_text=None):
 
 def show_careconnect_menu(sender):
     track_usage_safely(sender, "main_menu_opened")
+    from conversation_context import current
+    if current.get():return MAIN_MENU_MESSAGE
     language = get_matching_language_example(sender)
 
     if not language or language.lower() == "english":
@@ -852,7 +864,8 @@ def select_careconnect_language(sender, answer):
                     "of the requested language, or INVALID. "
                     "Never add explanations."
                 ),
-                input=answer
+                input=answer,
+                store=False
             )
 
             detected = response.output_text.strip()
@@ -875,15 +888,26 @@ def select_careconnect_language(sender, answer):
             + LANGUAGE_SELECTION_MESSAGE
         )
 
+    from conversation_ai import canonical_language,save_style,take_resume_state
+    from conversation_context import current
+    language=canonical_language(language) or language
     set_language_preference(sender, language)
-    update_user(sender, state="main_menu")
-
+    save_style(sender,'standard')
+    if current.get():current.get().update(language=language,style='standard')
+    resume=take_resume_state(sender) or 'main_menu'
+    if resume.startswith('admin_') or resume=='language_selection':resume='main_menu'
+    update_user(sender,state=resume)
+    if resume!='main_menu':
+        from conversation_routing import current_screen
+        return current_screen(sender,resume)
     return show_careconnect_menu(sender)
 
 
 
 def interpret_main_menu_intent(message):
     """Return a menu number, CLARIFY, or UNKNOWN."""
+    from conversation_context import current
+    if current.get() and 'main_intent' in current.get():return current.get()['main_intent']
     import re
     from chatbot import client, MODEL
 
@@ -977,11 +1001,22 @@ def add_reply_navigation(sender, reply):
 
 def handle_message(sender, text):
     """Contain stale-review races and keep navigation visible on every reply."""
-    try:
-        reply = _handle_message(sender, text)
-    except (PermissionError, ValueError):
-        reply = caregiver_message(sender, "That action is no longer available. Type 'profile' to view your profile or 'menu' for the main menu. 💜")
-    return add_reply_navigation(sender, reply)
+    from conversation_context import conversation
+    from conversation_ai import get_style,canonical_language
+    from conversation_routing import prepare
+    from conversation_presentation import render_reply
+    user=get_user(sender)
+    if user is None:
+        create_user(sender);user=get_user(sender)
+    language=canonical_language(get_matching_language_example(sender)) or ''
+    with conversation(language,get_style(sender)):
+        try:
+            routed,reply=prepare(sender,text,user)
+            if reply is None:reply=_handle_message(sender,routed)
+        except (PermissionError, ValueError):
+            reply=caregiver_message(sender,"That action is no longer available. Type 'profile' to view your profile or 'menu' for the main menu. 💜")
+        reply=add_reply_navigation(sender,reply)
+        return render_reply(sender,reply)
 
 
 def _handle_message(sender, text):
@@ -996,14 +1031,14 @@ def _handle_message(sender, text):
     original_text = text.strip()
     text = original_text.lower()
 
-    buddy_reply = handle_buddy_request_command(sender, text)
-    if buddy_reply is not None:
-        return buddy_reply
-
     if sender in ADMIN_PHONE_NUMBERS or text == "admin login" or state.startswith("admin_"):
         admin_reply = handle_admin_message(sender, original_text, state)
         if admin_reply is not None:
             return admin_reply
+
+    buddy_reply = handle_buddy_request_command(sender, text)
+    if buddy_reply is not None:
+        return buddy_reply
 
     from profile_navigation import handle_profile_navigation
     profile_reply = handle_profile_navigation(sender, text, state, original_text)
@@ -1034,6 +1069,7 @@ def _handle_message(sender, text):
 
     if text == "status":
         latest_request = get_latest_match_request(sender)
+        if latest_request:protect(latest_request.get('caregiver_name'))
 
         if latest_request is None:
             return caregiver_message(
@@ -1233,7 +1269,10 @@ def _handle_message(sender, text):
 
 
     elif state == "ai_chat":
-        return ask_careconnect(sender, original_text)
+        reply=ask_careconnect(sender, original_text)
+        if not reply.startswith('Sorry, CareConnect AI is temporarily unavailable.'):
+            protect(reply)
+        return reply
 
     elif state == "resources_menu":
         if text == "back":
@@ -1256,7 +1295,6 @@ def _handle_message(sender, text):
         )
 
     elif state == "ai_onboarding":
-        remember_matching_language(sender, original_text)
         extracted = extract_matching_preferences(original_text)
         current = get_user(sender)
 
@@ -1285,6 +1323,11 @@ def _handle_message(sender, text):
             support_type=support_type,
             availability=availability
         )
+        if reply not in {
+            "I'm here to help you find someone to connect with. What kind of support would help you most right now?",
+            "When would you usually feel comfortable chatting with another caregiver?",
+            "I can help you look for a suitable Support Buddy."}:
+            protect(reply)
 
         if not support_type or not availability:
             return reply
@@ -1443,6 +1486,7 @@ def _handle_message(sender, text):
     elif state == "confirm_match":
         if text == "1":
             outcome, request = create_selected_match_request(sender)
+            if request:protect(request.get('caregiver_name'))
             if outcome == "missing":
                 # A second confirmation may arrive after the first consumed the preview.
                 if get_user(sender)["state"] == "match_pending":
@@ -1521,6 +1565,7 @@ Type 'menu' to return to the main menu.
 
     elif state == "matched":
         latest_request = get_latest_match_request(sender)
+        if latest_request:protect(latest_request.get('caregiver_name'))
 
         if latest_request is not None:
             return (

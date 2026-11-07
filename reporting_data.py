@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import re
 from database_postgres import get_connection
 from profile_validation import is_safe_profile_value
+from conversation_ai import canonical_language
 
 SGT=timezone(timedelta(hours=8))
 FEATURES=['AI Chat','Translation','Menu routing','Profile extraction','Language detection','Matching onboarding','Matching preferences','Confirmation']
@@ -195,6 +196,7 @@ def snapshot(start,end, excluded=()):
         if consent!='granted' or consent_version!='careconnect-profiling-v2-reports':
             continue
         f=approved_fields[person];e=person_events[person]
+        language=canonical_language(language) or language
         context='; '.join(f[k] for k in ('care_recipient_profile','caregiving_context') if k in f)
         caregivers.append([person,consent,language,context or None,f.get('support_needs'),f.get('availability'),
                            first,last,len(person_active[person]),e['ai'],e['resource'],e['search_preview']+e['search_no_preview'],e['search_preview'],e['search_no_preview'],e['requests'],e['request_accepted'],e['request_declined'],e['request_pending']])

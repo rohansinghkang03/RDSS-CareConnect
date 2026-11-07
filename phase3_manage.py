@@ -16,6 +16,14 @@ RETENTION={
  'caregiver_profile_suggestions':'created_at','caregiver_profile_fields':'updated_at',
  'conversation_messages':'created_at',
 }
+OPTIONAL_RETENTION={'communication_preferences':'updated_at'}
+
+def retention_scopes(cursor,scopes=None):
+    result=dict(RETENTION if scopes is None else scopes)
+    for table,column in OPTIONAL_RETENTION.items():
+        cursor.execute('SELECT to_regclass(%s)',(table,))
+        if cursor.fetchone()[0] is not None:result[table]=column
+    return result
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -35,7 +43,7 @@ def main():
                 connection.rollback();print('Reporting migration preflight passed. All changes rolled back.')
         else:
             with connection.cursor() as cur:
-                for table,column in RETENTION.items():
+                for table,column in retention_scopes(cur).items():
                     # Identifiers are fixed constants, never user input.
                     cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}<CURRENT_TIMESTAMP-INTERVAL '3 years'")
                     print(f'{table}: {cur.fetchone()[0]} expired records')

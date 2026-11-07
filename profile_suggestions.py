@@ -19,6 +19,8 @@ Return a JSON object containing only these optional keys:
 care_recipient_profile, support_needs, availability, caregiving_context.
 
 Each value must be a concise, plain-language string.
+Use standard neutral wording in the relevant language, without slang or dialect labels.
+Do not use "Singlish Malay" as a language category; standard language labels are English and Malay.
 Omit any field without sufficient evidence.
 Do not include names, phone numbers, addresses or identifiers.
 Do not give medical advice.

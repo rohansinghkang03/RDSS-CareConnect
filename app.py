@@ -124,8 +124,12 @@ def health():
             with connection.cursor() as cur:
                 cur.execute("SELECT 1 FROM reporting_settings WHERE key='phase3_v1'")
                 ready=cur.fetchone() is not None
+                cur.execute("SELECT to_regclass('communication_preferences') IS NOT NULL")
+                conversation_ready=cur.fetchone()[0]
         ready=ready and (Path(__file__).parent/'report_templates'/'CareConnectStatistics_Template.xlsx').is_file()
-        return {'status':'ok' if ready else 'unavailable','reporting':'ready' if ready else 'unavailable'},200 if ready else 503
+        return {'status':'ok' if ready and conversation_ready else 'unavailable',
+                'reporting':'ready' if ready else 'unavailable',
+                'conversation':'ready' if conversation_ready else 'unavailable'},200 if ready and conversation_ready else 503
     except Exception:
         return {'status':'unavailable','reporting':'unavailable'},503
     finally:

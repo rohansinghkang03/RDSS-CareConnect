@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from database_postgres import get_connection
-from phase3_manage import RETENTION
+from phase3_manage import RETENTION,retention_scopes
 
 log=logging.getLogger('gunicorn.error.retention')
 _lock=threading.Lock()
@@ -23,7 +23,7 @@ def cleanup_if_due():
                 last=cur.fetchone()
                 if last and last[0]:return None
                 counts={}
-                for table,column in RETENTION.items():
+                for table,column in retention_scopes(cur,RETENTION).items():
                     cur.execute(f"DELETE FROM {table} WHERE {column}<CURRENT_TIMESTAMP-INTERVAL '3 years'")
                     counts[table]=cur.rowcount
                 cur.execute('DELETE FROM reporting_admin_sessions WHERE expires_at<CURRENT_TIMESTAMP')

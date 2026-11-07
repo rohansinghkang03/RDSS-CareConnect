@@ -37,6 +37,7 @@ database_postgres_ready.py
 phase1_backups/
 phase2_backups/
 phase3_backups/
+phase4_backups/
 # Reports contain linked caregiver information; never commit generated exports.
 CareConnectStatistics_*.xlsx
 !report_templates/CareConnectStatistics_Template.xlsx
