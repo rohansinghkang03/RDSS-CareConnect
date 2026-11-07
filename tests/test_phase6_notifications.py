@@ -26,6 +26,20 @@ class NotificationTests(p5.MatchChatTests):
     def opt_in(self,person=p5.BUD):
         n.command(person,'notifications on');n.touch(person)
 
+    def test_delayed_or_invalid_webhook_does_not_reopen_delivery_window(self):
+        import time
+        n.command(p5.BUD,'notifications on')
+        n.touch(p5.BUD,str(int(time.time()-26*3600)),require_timestamp=True)
+        before=self.rows('SELECT last_inbound FROM notification_preferences WHERE sender=%s',(p5.BUD,))
+        n.touch(p5.BUD,None,require_timestamp=True)
+        n.touch(p5.BUD,'invalid',require_timestamp=True)
+        n.touch(p5.BUD,str(int(time.time()+86400)),require_timestamp=True)
+        self.assertEqual(before,self.rows('SELECT last_inbound FROM notification_preferences WHERE sender=%s',(p5.BUD,)))
+        n.touch(p5.BUD,str(int(time.time()-48*3600)),require_timestamp=True)
+        self.assertEqual(before,self.rows('SELECT last_inbound FROM notification_preferences WHERE sender=%s',(p5.BUD,)))
+        self.rows("UPDATE match_requests SET status='pending' WHERE id=%s",(self.request,));self.alert()
+        with patch('whatsapp.send_message') as send:self.assertFalse(n.process_one());send.assert_not_called()
+
     def test_notification_opt_in_required_and_off_cancels_queued(self):
         self.rows("UPDATE match_requests SET status='pending' WHERE id=%s",(self.request,));self.alert()
         with patch('whatsapp.send_message') as send:self.assertFalse(n.process_one());send.assert_not_called()

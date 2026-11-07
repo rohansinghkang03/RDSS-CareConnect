@@ -50,7 +50,7 @@ def process_message(message):
                 record_activity(sender,digest)
             from notifications import touch
             reply = handle_message(sender, body.strip())
-            touch(sender)
+            touch(sender,message.get('timestamp'),require_timestamp=True)
             from match_chat import ChatReply
             if isinstance(reply,ChatReply):
                 from match_chat_delivery import send as send_match_chat

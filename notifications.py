@@ -15,12 +15,20 @@ def subscribe(connection,sender):
 def enqueue(connection,recipient,event,entity_id,event_key):
     if enabled():connection.execute('INSERT INTO notification_outbox(recipient,event,entity_id,event_key) VALUES(?,?,?,?) ON CONFLICT DO NOTHING',(recipient,event,entity_id,str(event_key)))
 
-def touch(sender):
+def touch(sender,timestamp=None,require_timestamp=False):
     if not enabled():return
+    import time
+    if timestamp is None:
+        if require_timestamp:return
+        stamp=int(time.time())
+    else:
+        if not isinstance(timestamp,(str,int)) or isinstance(timestamp,bool) or not str(timestamp).isdigit():return
+        stamp=int(timestamp)
+        if stamp<=0 or stamp>time.time()+120:return
     connection=get_connection()
     try:
         with connection,connection.cursor() as cur:
-            cur.execute('INSERT INTO notification_preferences(sender,last_inbound) SELECT sender,CURRENT_TIMESTAMP FROM users WHERE sender=%s ON CONFLICT(sender) DO UPDATE SET last_inbound=CURRENT_TIMESTAMP',(sender,))
+            cur.execute('INSERT INTO notification_preferences(sender,last_inbound) SELECT sender,to_timestamp(%s) FROM users WHERE sender=%s ON CONFLICT(sender) DO UPDATE SET last_inbound=GREATEST(notification_preferences.last_inbound,EXCLUDED.last_inbound)',(stamp,sender))
     finally:connection.close()
 
 def command(sender,text):
