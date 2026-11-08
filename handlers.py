@@ -333,7 +333,8 @@ def admin_application_detail(application_id):
         lines.insert(-6,'Verification: Pending verification')
     lines.append("For approval, rejection or verification, please choose the number shown. I need that explicit choice to make sure the decision is yours.")
     if application["admin_notes"]:
-        lines.insert(-5, f"Private note: {application['admin_notes']}")
+        first_choice=lines.index('1. Approve')
+        lines.insert(first_choice, f"Private note: {application['admin_notes']}\n")
     return "\n".join(lines)
 
 

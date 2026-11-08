@@ -22,16 +22,17 @@ def organize(sender,reply,state):
     lines=[]
     for raw in body.splitlines():
         line=raw.strip()
-        if line.startswith('Type ') and re.search(COMMAND,line):
+        if re.match(r'^(?:Type|Taip) ',line) and re.search(COMMAND,line):
             discovered.extend(re.findall(COMMAND,line));continue
         # Keep meaningful preceding prose, but move trailing generic reminders.
-        match=re.search(r"(?:^|[.!?] )Type "+COMMAND,line)
+        match=re.search(r"(?:^|[.!?] )(?:Type|Taip) "+COMMAND,line)
         if match and '__NAV_PRIVATE_' not in line:
             start=match.start()+(2 if match[0].startswith(('. ', '! ', '? ')) else 0)
             discovered.extend(re.findall(COMMAND,line[start:]));raw=line[:start].rstrip()
         raw=re.sub(r"^Reply with a number[.]?(?:.*)$",'',raw)
         raw=re.sub(r"^Select a number to explore a category[.]$",'',raw)
         raw=re.sub(r"^Choose (?:a|one) number[.]?(?:.*)$",'',raw)
+        raw=re.sub(r"^Pilih (?:satu )?nombor[.]?(?:.*)$",'',raw)
         lines.append(raw)
     body='\n'.join(lines).strip()
     body=re.sub(r'\n{3,}','\n\n',body)

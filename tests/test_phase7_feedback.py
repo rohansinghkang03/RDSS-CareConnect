@@ -54,6 +54,14 @@ class FeedbackTests(p5.MatchChatTests):
         self.assertLess(section.index("'back'"),section.index("'menu'"))
         self.assertEqual(section.count("'menu'"),1)
 
+    def test_fixed_malay_navigation_is_merged_before_final_translation(self):
+        with conversation('Malay'):
+            protect("'menu'")
+            reply=organize(p5.CARE,"Profil penjaga saya 💜\n\n1. Semak cadangan\n2. Aktifkan cadangan\n\nPilih satu nombor. Taip 'menu' untuk menu utama.\nTaip 'back' untuk kembali.",'profile_menu')
+        body,section=reply.split('You can type these other commands too:')
+        self.assertNotIn('Taip',body);self.assertNotIn('Pilih satu nombor',body)
+        self.assertEqual(section.count("'menu'"),1)
+
     def test_actual_admin_menu_and_summary_have_one_command_section(self):
         self.admin()
         for message in ['menu','summary']:
@@ -73,8 +81,10 @@ class FeedbackTests(p5.MatchChatTests):
         self.assertEqual(before,self.rows('SELECT id,status FROM support_buddy_applications ORDER BY id'))
 
     def test_verification_display_omits_not_required_and_keeps_existing_policy(self):
+        self.rows("UPDATE support_buddy_applications SET admin_notes='Synthetic private note' WHERE id=%s",(self.buddy,))
         reply=base.handlers.admin_application_detail(self.buddy)
         self.assertNotIn('Verification: Not required',reply)
+        self.assertLess(reply.index('Private note:'),reply.index('1. Approve'))
         self.rows('UPDATE support_buddy_applications SET verification_required=1,verified_at=NULL WHERE id=%s',(self.buddy,))
         self.assertIn('Pending verification',base.handlers.admin_application_detail(self.buddy))
         self.rows('UPDATE support_buddy_applications SET verified_at=CURRENT_TIMESTAMP WHERE id=%s',(self.buddy,))
