@@ -122,6 +122,16 @@ def create_tables():
         """)
 
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS match_search_sessions (
+                sender TEXT PRIMARY KEY REFERENCES users(sender) ON DELETE CASCADE,
+                preference_key TEXT NOT NULL CHECK(length(preference_key)=64),
+                seen_buddies INTEGER[] NOT NULL DEFAULT '{}',
+                tier TEXT NOT NULL CHECK(tier IN ('exact','support','time')),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS buddy_request_inbox
             ON match_requests(buddy_sender, status, id)
         """)

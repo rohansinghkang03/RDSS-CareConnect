@@ -88,6 +88,7 @@ def current_screen(sender,state):
     if state=='profile_review_edit':return "Please type your corrected profile information. It will only be saved after you confirm the exact wording. Leave out names and contact details. Type 'profile' to leave this edit, or 'menu' for the main menu."
     if state=='profile_withdraw_confirm':return "Withdraw profile permission? This deletes saved profile information, suggestions and unfinished edits. AI chat history remains.\n\n1. Yes, withdraw permission and delete my profile\n2. Cancel and keep my profile\n\nType 'menu' for the main menu."
     if state=='status_menu':return h.show_status_menu(sender)
+    if state=='confirm_match':return h.current_match_choice(sender)
     if state=='match_alternatives':return h.show_match_alternatives(sender)
     if state=='ai_onboarding_confirm':
         user=h.get_user(sender)
@@ -140,7 +141,10 @@ def go_back(sender,state):
         h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
     if state=='resources_detail':
         h.update_user(sender,state='resources_menu');return h.get_resources_menu()
-    if state in {'ai_onboarding_confirm','confirm_match'}:
+    if state=='confirm_match':return h.show_match_alternatives(sender)
+    if state=='match_alternatives':
+        h.update_user(sender,state='ai_onboarding_confirm');return current_screen(sender,'ai_onboarding_confirm')
+    if state in {'ai_onboarding_confirm'}:
         previous='ai_onboarding' if state=='ai_onboarding_confirm' else 'ai_onboarding_confirm'
         h.update_user(sender,state=previous);return current_screen(sender,previous)
     h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
@@ -152,12 +156,17 @@ def prepare(sender,text,user):
     if state.startswith('admin_') or command=='admin login':
         # Never send PINs, admin notes, private application records or report inputs to AI.
         if context:context.update(language='English',style='standard')
-        if command=='back':return 'menu',None
+        if command=='back':return ('menu' if state in {'admin_pin','admin_menu','admin_report_period'} else 'back'),None
         if state=='admin_menu':
             command={'reports':'4','statistics':'4','download report':'4','applications':'1','summary':'2','logout':'3'}.get(command,command)
             return command,None
         return text,None
+    from admin_assist import notification_alias
+    alias=notification_alias(command)
+    if alias:return alias,None
     if command in {'notifications','notifications on','notifications off','stop notifications','stop alerts','unsubscribe','stop'}:return text,None
+    if state in {'confirm_match','match_alternatives'} and command.strip(' .?!') in {'anyone else','someone else','another buddy','another match','next buddy','next match','show me someone else','show another buddy','orang lain','ada orang lain','换一个','換一個','还有别人吗','還有別人嗎'}:
+        return 'next buddy',None
     if not private_field(state):
         normalized=unicodedata.normalize('NFKC',text).strip().replace('،',',').replace('、',',')
         if re.fullmatch(r'[\d,\s.。]+',normalized):
@@ -200,11 +209,17 @@ def prepare(sender,text,user):
             return text,("Your answer has not been saved. You can type 'resources' to open the Resource Hub, "
                          "'profile' for your profile, 'back' for the previous screen or 'menu' for the main menu.\n\n"+current_screen(sender,state))
         return text,None
-    if command in EXPLICIT_CHOICES.get(state,{}):return EXPLICIT_CHOICES[state][command],None
+    if command in EXPLICIT_CHOICES.get(state,{}):
+        choice=EXPLICIT_CHOICES[state][command]
+        if state in SENSITIVE and choice=='1':
+            return text,"I need you to confirm using the number shown so your agreement is explicit. AI cannot make this decision for you. Nothing has been confirmed yet.\n\n"+current_screen(sender,state)
+        return choice,None
     # Literal confirmations are safe only in the screen that actually asks them.
     if state in SENSITIVE and command in {'yes','no','ya','tidak','ஆம்','இல்லை','是','否'}:
         if state=='profile_review' and command not in {'yes','ya','ஆம்','是'}:return text,None
-        return ('1' if command in {'yes','ya','ஆம்','是'} else '2'),None
+        if command in {'yes','ya','ஆம்','是'}:
+            return text,"I need you to confirm using the number shown so your agreement is explicit. Nothing has been confirmed yet.\n\n"+current_screen(sender,state)
+        return '2',None
     if command in SHORT:return text,None
     options=options_for(state)
     # Main-menu intent is interpreted by its established classifier; use this call for language only.
@@ -236,6 +251,7 @@ def prepare(sender,text,user):
     if not result['route_confident']:return text,None
     action=result['action'];choices=result['choices']
     if action=='help':return text,'Here is what you can do on this screen. No changes have been made.\n\n'+current_screen(sender,state)
+    if action=='next_match' and state in {'confirm_match','match_alternatives'}:return 'next buddy',None
     if action=='back':
         return text,go_back(sender,state)
     if action=='cancel':
@@ -251,7 +267,7 @@ def prepare(sender,text,user):
             # Edit/back/keep/do-not-send choices do not approve or delete anything.
             if choices==['2'] and state!='profiling_consent':return '2',None
             if state=='buddy_registration_consent' and choices==['3']:return '3',None
-            return text,'To make sure this is your choice, please confirm using the number shown.\n\n'+current_screen(sender,state)
+            return text,'To make sure this is your choice, please confirm using the number shown. This action needs your explicit agreement; AI cannot make that decision for you.\n\n'+current_screen(sender,state)
         return ','.join(dict.fromkeys(choices)),None
     if action in {'menu','profile','my status','status','application status','requests','language'}:
         if action=='language':ai.resume_language_screen(sender,state)

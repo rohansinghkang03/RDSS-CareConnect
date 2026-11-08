@@ -604,6 +604,8 @@ def save_match_preview(requester, match, user):
                     availability = EXCLUDED.availability
             """, (requester, match["buddy_id"], match["sender"], match["name"],
                   match["percentage"], user.get("support_type"), user.get("availability")))
+            from match_browsing import remember
+            remember(connection,requester,match,user)
             connection.execute("UPDATE users SET state = 'confirm_match' WHERE sender = ?", (requester,))
     finally:
         connection.close()

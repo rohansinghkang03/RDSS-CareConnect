@@ -10,7 +10,7 @@ def _record(identifier,outcome,provider_id=None):
     except Exception:log.warning('Direct-chat delivery audit unavailable; no private details logged')
 
 def _blocked(sender):
-    return whatsapp.send_message(sender,"This chat link is no longer available. No new number has been shared. Type 'my chats' or 'menu' to check your connections.")
+    return whatsapp.send_message(sender,"This chat link is no longer available. No new number has been shared.\n\nYou can type these other commands too:\n'my chats' — Your connections\n'menu' — Main menu")
 
 def send(sender,reply):
     from match_chat import ChatReply
@@ -23,7 +23,7 @@ def send(sender,reply):
         except (PermissionError,ValueError):return _blocked(sender)
         if status['state']!='ready':return _blocked(sender)
         whatsapp.send_message(sender,body)
-        body="Your match chat is ready. Tap the button to open WhatsApp. Type 'my chats' or 'menu' to return."
+        body="Your match chat is ready. Tap the button to open WhatsApp.\n\nYou can type these other commands too:\n'my chats' — Your connections\n'menu' — Main menu"
     try:identifier,url=store.authorize_delivery(sender,reply.request_id)
     except (PermissionError,ValueError):return _blocked(sender)
     try:

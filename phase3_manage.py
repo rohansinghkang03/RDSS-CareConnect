@@ -16,7 +16,7 @@ RETENTION={
  'caregiver_profile_suggestions':'created_at','caregiver_profile_fields':'updated_at',
  'conversation_messages':'created_at',
 }
-OPTIONAL_RETENTION={'notification_outbox':'created_at','notification_preferences':'updated_at','communication_preferences':'updated_at','match_chat_permissions':'updated_at',
+OPTIONAL_RETENTION={'match_search_sessions':'updated_at','notification_outbox':'created_at','notification_preferences':'updated_at','communication_preferences':'updated_at','match_chat_permissions':'updated_at',
                     'match_chat_deliveries':'created_at','match_chat_prompts':'shown_at'}
 
 def retention_scopes(cursor,scopes=None):

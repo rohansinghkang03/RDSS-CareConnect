@@ -34,6 +34,8 @@ def touch(sender,timestamp=None,require_timestamp=False):
 def command(sender,text):
     if not enabled():return None
     value=text.strip().casefold()
+    from admin_assist import notification_alias
+    value=notification_alias(value) or value
     if value in {'stop notifications','stop alerts','unsubscribe','stop'}:value='notifications off'
     if value not in {'notifications','notifications on','notifications off'}:return None
     connection=get_connection()
@@ -94,8 +96,8 @@ def process_one():
         with c,c.cursor() as cur:
             cur.execute("SELECT enabled AND last_inbound>CURRENT_TIMESTAMP-INTERVAL '23 hours 55 minutes' FROM notification_preferences WHERE sender=%s",(job[1],))
             row=cur.fetchone();valid=row and row[0] and _valid(cur,job[2],job[3],job[1],job[4])
-            cur.execute("SELECT u.language_preference,COALESCE(p.style,'standard') FROM users u LEFT JOIN communication_preferences p ON p.sender=u.sender WHERE u.sender=%s",(job[1],))
-            presentation=cur.fetchone() or ('English','standard')
+            cur.execute("SELECT u.language_preference,COALESCE(p.style,'standard'),u.state FROM users u LEFT JOIN communication_preferences p ON p.sender=u.sender WHERE u.sender=%s",(job[1],))
+            presentation=cur.fetchone() or ('English','standard','main_menu')
     finally:c.close()
     if not enabled():_finish(job[0],'queued');return False
     if not valid:_finish(job[0],'cancelled');return True
@@ -105,7 +107,8 @@ def process_one():
         from conversation_context import conversation
         from conversation_presentation import render_reply
         with conversation(presentation[0] or 'English',presentation[1]):
-            body=render_reply(job[1],render(job[2]))
+            from navigation_design import organize
+            body=render_reply(job[1],organize(job[1],render(job[2]),presentation[2]))
         provider=whatsapp.send_message(job[1],body)
     except whatsapp.WhatsAppRejected:_finish(job[0],'failed')
     except Exception:_finish(job[0],'unknown')

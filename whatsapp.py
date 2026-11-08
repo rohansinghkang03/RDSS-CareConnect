@@ -1,6 +1,8 @@
 """WhatsApp delivery with bounded waits and private logging."""
 import requests
 import uuid
+import logging
+log=logging.getLogger(__name__)
 from config import ACCESS_TOKEN, PHONE_NUMBER_ID
 
 class WhatsAppRejected(RuntimeError):
@@ -48,6 +50,7 @@ def _send(recipient,kind,payload):
         # Never include response bodies, URLs, tokens or recipient identifiers.
         try:code=response.json().get('error',{}).get('code')
         except (ValueError,AttributeError,TypeError):code=None
+        log.warning('WhatsApp rejected delivery: HTTP %s, provider code %s',response.status_code,code if isinstance(code,int) else 'unknown')
         raise WhatsAppRejected(response.status_code,code)
     try:
         identifier=response.json()['messages'][0]['id']

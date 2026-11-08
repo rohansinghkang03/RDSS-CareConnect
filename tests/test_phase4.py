@@ -206,9 +206,12 @@ class Phase4Tests(unittest.TestCase):
         self.assertIn('share my public profile',reply)
         self.assertIsNone(base.database.get_support_buddy_application('synthetic-a'))
 
-    def test_explicit_accept_and_reject_words_work_without_number_guessing(self):
+    def test_positive_profile_acceptance_requires_number_but_reject_words_stay_safe(self):
         self.pending();base.database.update_user('synthetic-a',state='profile_review')
-        base.handlers.handle_message('synthetic-a','terima cadangan')
+        reply=base.handlers.handle_message('synthetic-a','terima cadangan')
+        self.assertIn('number shown',reply)
+        self.assertEqual(self.rows('SELECT field_value FROM caregiver_profile_fields'),[])
+        base.handlers.handle_message('synthetic-a','1')
         self.assertEqual(self.rows('SELECT field_value FROM caregiver_profile_fields'),[('Peer support',)])
         base.analytics.propose_profile_field('synthetic-a','availability','Evenings')
         base.database.update_user('synthetic-a',state='profile_review')

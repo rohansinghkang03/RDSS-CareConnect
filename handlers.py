@@ -319,7 +319,6 @@ def admin_application_detail(application_id):
         f"Availability: {(application['availability'] or '').replace('|', ', ')}",
         f"Contact: {(application['contact_methods'] or '').replace('|', ', ')}",
         f"Introduction: {application['introduction'] or 'Skipped'}",
-        f"Verification: {verification}",
         f"Status: {application['status']}",
         "",
         "1. Approve",
@@ -328,6 +327,11 @@ def admin_application_detail(application_id):
         "4. Add private note",
         "5. Back to applications",
     ]
+    if application['verified_at']:
+        lines.insert(-6,'Verified by an administrator on '+format_sgt_timestamp(application['verified_at']))
+    elif application['verification_required']:
+        lines.insert(-6,'Verification: Pending verification')
+    lines.append("For approval, rejection or verification, please choose the number shown. I need that explicit choice to make sure the decision is yours.")
     if application["admin_notes"]:
         lines.insert(-5, f"Private note: {application['admin_notes']}")
     return "\n".join(lines)
@@ -393,6 +397,10 @@ def handle_admin_message(sender, text, state):
             logout(sender)
             update_user(sender,state='main_menu')
             return "Your admin session has expired or changed. Type 'admin login' to sign in again."
+        if state in {'admin_menu','admin_report_period','admin_applications'} or state.startswith('admin_review_'):
+            from admin_assist import restricted_request
+            explanation=restricted_request(text) if not command.isdigit() else None
+            if explanation:return explanation
         if command in {'notifications','notifications on','notifications off'}:
             from notifications import command as notification_command
             return notification_command(sender,command)
@@ -401,6 +409,13 @@ def handle_admin_message(sender, text, state):
             intent=resolve(text)
             if intent:
                 action,period=intent
+                if action.startswith('notifications_'):
+                    from notifications import command as notification_command
+                    return notification_command(sender,action.replace('_',' '))
+                if action=='report_clarify':
+                    update_user(sender,state='admin_report_period')
+                    return ("Of course. Do you mean the last 30 days, or a specific calendar month? "
+                            "For the last 30 days, reply 30. For a calendar month, enter its start and end dates as DD-MM-YYYY DD-MM-YYYY (up to 31 days).")
                 if action=='report':
                     if period:
                         from reporting_jobs import request_report
@@ -488,9 +503,7 @@ def handle_admin_message(sender, text, state):
         return f"Application {label}.\n\n" + admin_application_list(sender)
 
     if state.startswith("admin_note_"):
-        if command == "back":
-            update_user(sender, state="admin_menu")
-            return admin_menu_reply()
+        if command == "back":command="cancel"
         application_id = int(state.rsplit("_", 1)[1])
         if command == "cancel":
             update_user(sender, state=f"admin_review_{application_id}")
@@ -697,13 +710,38 @@ def show_match_choice(sender, match, user):
     else:opening="We may have found someone you could connect with! 💜\n\n"+match['name']
     return caregiver_message(sender,opening+'\n\n'+details+
         "\n\nThese are their usual preferences, not a promise that they are online now. They will need to accept your request."
-        "\n\nWould you like to send them a connection request? We will send WhatsApp updates about this connection. Type 'notifications off' anytime to stop alerts.\n1. Yes, send request\n2. No, go back\n\nType 'menu' for the main menu.",required_text=match['name'])
+        "\n\nWould you like to send them a connection request? We will send WhatsApp updates about this connection. Type 'notifications off' anytime to stop alerts.\n1. Yes, send request\n2. No, show someone else\n\nType 'menu' for the main menu.",required_text=match['name'])
+
+
+def show_next_match(sender):
+    from match_browsing import remember_current,history,remaining
+    user=get_user(sender);matches=find_matches(user)
+    remember_current(sender,user,matches)
+    _,tier=history(sender,user)
+    unseen=remaining(sender,user,matches)
+    candidate=next((m for m in unseen if m.get('tier','exact')=='exact'),None) or next((m for m in unseen if m.get('tier','exact')==(tier or 'exact')),None)
+    if candidate:return caregiver_message(sender,"Of course—let's look at someone else. Your connection request hasn't been sent to the previous person. 💜")+'\n\n'+show_match_choice(sender,candidate,user)
+    return caregiver_message(sender,"Your connection request hasn't been sent for this preview. There aren't any more suggestions in that same group just now. We can still explore the other options below. 💜")+'\n\n'+show_match_alternatives(sender,matches)
+
+
+def current_match_choice(sender):
+    from match_browsing import preview
+    chosen=preview(sender);user=get_user(sender)
+    if chosen:
+        candidate=next((m for m in find_matches(user) if m['buddy_id']==chosen['buddy_id'] and m['sender']==chosen['buddy_sender']),None)
+        if candidate:return show_match_choice(sender,candidate,user)
+    return caregiver_message(sender,"That preview is no longer available. Nothing new has been sent. Type 'find a buddy' to start a fresh search, or 'menu' for the main menu.")
 
 
 def show_match_alternatives(sender, matches=None):
     user=get_user(sender)
     matches=find_matches(user) if matches is None else matches
     if not matches:return buddy_unavailable_reply(sender,no_matches=True)
+    from match_browsing import remaining
+    matches=remaining(sender,user,matches)
+    if not matches:
+        update_user(sender,state='match_alternatives')
+        return caregiver_message(sender,"You've seen the available suggestions for these preferences. 💜 Nothing has been sent unless you confirmed a request. We can try a fresh search or chat here for a while.\n\n3. Change my preferences\n4. Talk to CareConnect AI")
     # New exact candidates may have become eligible since the previous search.
     exact=next((m for m in matches if m.get('tier','exact')=='exact'),None)
     if exact:return show_match_choice(sender,exact,user)
@@ -1278,6 +1316,8 @@ def _handle_message(sender, text):
                 return message
 
         if text == "1":
+            from match_browsing import reset as reset_browsing
+            reset_browsing(sender)
             track_usage_safely(sender, "buddy_search_started")
             update_user(
                 sender,
@@ -1566,13 +1606,17 @@ def _handle_message(sender, text):
         return show_match_choice(sender,best_match,user)
 
     elif state == 'match_alternatives':
+        if text=='next buddy':return show_next_match(sender)
         if text in {'1','2'}:
             tier='support' if text=='1' else 'time'
-            candidate=next((m for m in find_matches(user) if m.get('tier')==tier),None)
+            from match_browsing import remaining
+            candidate=next((m for m in remaining(sender,user,find_matches(user)) if m.get('tier')==tier),None)
             if candidate:return show_match_choice(sender,candidate,user)
             return caregiver_message(sender,"That option has changed since we last checked. Let's see what's available now. 💜")+'\n\n'+show_match_alternatives(sender)
         if text=='3':
-            update_user(sender,state='ai_onboarding',support_type=None,availability=None)
+            from match_browsing import reset as reset_browsing
+            reset_browsing(sender)
+            update_user(sender,state='ai_onboarding',support_type='',availability='')
             return caregiver_message(sender,"Of course. What kind of support would help you most? Type 'menu' to return to the main menu.")
         if text=='4':
             update_user(sender,state='ai_chat')
@@ -1580,6 +1624,7 @@ def _handle_message(sender, text):
         return show_match_alternatives(sender)
 
     elif state == "confirm_match":
+        if text=='next buddy':return show_next_match(sender)
         if text == "1":
             outcome, request = create_selected_match_request(sender)
             if request:protect(request.get('caregiver_name'))
@@ -1632,21 +1677,7 @@ def _handle_message(sender, text):
                 )
 
         elif text == "2":
-            # Keep both alternative routes accessible after declining a preview.
-            candidates=find_matches(user)
-            if candidates and not any(m.get('tier','exact')=='exact' for m in candidates):
-                return show_match_alternatives(sender,candidates)
-            reset_user(sender)
-            return caregiver_message(
-                    sender,
-                    (
-                        "No worries! 💜\n\n"
-                        "Your connection request hasn't been sent.\n\n"
-                        "You can look for another Support Buddy whenever you're ready.\n\n"
-                        "Type 'menu' to return to the main menu."
-                    ),
-                    required_text="'menu'"
-                )
+            return show_next_match(sender)
 
         return caregiver_message(
                 sender,

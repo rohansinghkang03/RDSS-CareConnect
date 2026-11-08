@@ -11,5 +11,5 @@ MESSAGES={
 }
 
 def render(event,language='English'):
-    # Keep deterministic delivery; translation can be added without exposing records.
+    # The worker applies the established presentation language without exposing records.
     return MESSAGES[event]+"\n\nYou can type these other commands too:\n'menu' — Main menu\n'notifications off' — Stop these alerts"
