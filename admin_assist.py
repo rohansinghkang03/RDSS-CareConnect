@@ -50,8 +50,8 @@ def resolve(message):
         # Common requests work even when the model is unavailable.
         if re.fullmatch(r'(?:please )?(?:give|send|show|download|get)(?: me)? (?:the )?(?:careconnect )?(?:stats|statistics|report|excel)(?: (?:from|for))? (?:the )?last (?:7|30) days?[.!?]*',text):
             return ('report',periods[0])
-    if apps and re.fullmatch(r'(?:are there any|any|show(?: me)?|list|do we have any) (?:pending )?(?:support buddy )?applications?[?! .]*',text):return ('applications',None)
-    vocabulary=set('may monthly month weekly week a an the please could can would you we i me us have has is are there any do does give send show open download get make prepare generate look at see check view list tell know careconnect stats statistics report reports excel spreadsheet from for last days day d pending support buddy buddies application applications applicant applicants summary counts count how many of our whats what waiting review current currently'.split())
+    if apps and re.fullmatch(r'(?:are there any|any|show(?: me)?|list|do we have any) (?:(?:pending|new|unreviewed) )?(?:support buddy )?applications?[?! .]*',text):return ('applications',None)
+    vocabulary=set('new unreviewed may monthly month weekly week a an the please could can would you we i me us have has is are there any do does give send show open download get make prepare generate look at see check view list tell know careconnect stats statistics report reports excel spreadsheet from for last days day d pending support buddy buddies application applications applicant applicants summary counts count how many of our whats what waiting review current currently'.split())
     # Unknown words can be names or private notes. Keep them outside AI entirely.
     words=re.findall(r"[a-z]+|[0-9]+",text)
     if any(word not in vocabulary and word not in {'7','30'} for word in words):return None

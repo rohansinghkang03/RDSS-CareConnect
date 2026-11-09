@@ -7,7 +7,7 @@ from conversation_script import response_style
 
 OPTIONS={
  'main_menu':{'1':'Find a Support Buddy','2':'Talk to CareConnect AI','3':'Explore resources','4':'Become a Support Buddy','5':'Contact RDSS','6':'My profile and privacy','7':'Request/application status','8':'Change language'},
- 'profile_menu':{'1':'Review profile suggestions','2':'Read permission / enable suggestions','3':'Withdraw permission and delete profile','4':'Main menu','5':'Continue AI Chat'},
+ 'profile_menu':{'1':'Review profile suggestions','2':'Read permission / enable suggestions','3':'Withdraw permission and delete profile','4':'Main menu','5':'Continue AI Chat','6':'My Support Buddy profile / edit display name'},
  'profiling_consent':{'1':'Yes, enable suggestions and administrator reporting','2':'No, decline permission'},
  'profile_review':{'1':'Accept suggestion','2':'Edit suggestion','3':'Reject suggestion'},
  'profile_review_confirm':{'1':'Confirm and save exact edit','2':'Cancel edit'},
@@ -18,12 +18,16 @@ OPTIONS={
  'buddy_unavailable':{'1':'Find another buddy','2':'Talk to CareConnect AI','3':'Main menu'},
  'ai_onboarding_confirm':{'1':'Yes, search using these preferences','2':'Start again / change preferences'},
  'match_alternatives':{'1':'Same support preference, different usual time','2':'Same usual time, different support preference','3':'Change my preferences','4':'Talk to CareConnect AI'},
+ 'match_request_review':{'1':'Send request and agree to number sharing if accepted','2':'Edit chosen name','3':'Edit personal message','4':'Cancel without sending'},
+ 'buddy_profile_menu':{'1':'Edit my public display name','2':'Profile and privacy settings','3':'WhatsApp-sharing permission'},
+ 'buddy_contact_consent':{'1':'Agree and enable buddy WhatsApp-sharing permission','2':'Withdraw buddy sharing permission','3':'Back to buddy profile'},
+ 'buddy_profile_confirm':{'1':'Confirm and save exact display name','2':'Cancel without changing'},
  'confirm_match':{'1':'Yes, send connection request','2':'No, do not send request'},
  'buddy_registration_review':{'1':'Continue to consent','2':'Edit an answer','3':'Cancel application'},
  'buddy_registration_consent':{'1':'I agree, submit application','2':'Back to review without submitting','3':'Cancel application'},
  'buddy_registration_cancel':{'1':'Yes, cancel and delete draft','2':'Keep draft'},
 }
-SENSITIVE={'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm',
+SENSITIVE={'buddy_contact_consent','buddy_profile_confirm','match_request_review', 'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm',
            'buddy_registration_consent','buddy_registration_cancel','confirm_match'}
 SHORT={'yes','no','ok','okay','yup','yeah','thanks','thank you','hi','hello','hey','ya','tak','boleh','சரி','ஆம்','是','好','好的'}
 EXPLICIT_CHOICES={
@@ -41,7 +45,7 @@ DIRECT_DESTINATIONS={'resources':'3','resource hub':'3','ai chat':'2','find a bu
                      'become a buddy':'4','contact rdss':'5'}
 
 def private_field(state):
-    return state in {'profile_review_edit','buddy_registration_name','buddy_registration_display_name',
+    return state in {'buddy_profile_name','match_request_name','match_request_message','profile_review_edit','buddy_registration_name','buddy_registration_display_name',
         'buddy_registration_introduction','buddy_registration_edit_name','buddy_registration_edit_display_name',
         'buddy_registration_edit_introduction'}
 
@@ -73,6 +77,19 @@ def current_screen(sender,state):
     if state.startswith(('contact_share_','contact_chat_')):
         from match_chat import screen
         return screen(sender,int(state.rsplit('_',1)[1]),offer=False)
+    if state.startswith(('buddy_profile_','buddy_contact_','match_request_')):
+        from connection_requests import enabled as updates_enabled
+        if not updates_enabled():return "The updated connection/profile flow is not available. Nothing has been confirmed. Type 'menu' to return."
+    if state.startswith(('buddy_profile_','buddy_contact_')):
+        from buddy_profile import current_screen as buddy_screen
+        return buddy_screen(sender,state)
+    if state.startswith('match_existing_'):return h.current_existing_match(sender,state)
+    if state.startswith('match_request_'):
+        from connection_requests import current_screen as request_screen
+        return request_screen(sender,state)
+    if state=='match_seen':
+        from match_previous import show
+        return show(sender)
     if state=='main_menu':return h.show_careconnect_menu(sender)
     if state=='language_selection':return h.LANGUAGE_SELECTION_MESSAGE
     if state=='profile_menu':return p.show_profile(sender)
@@ -111,6 +128,26 @@ def current_screen(sender,state):
 
 def go_back(sender,state):
     import handlers as h
+    if state.startswith(('buddy_profile_','buddy_contact_')):
+        from buddy_profile import show,current_screen as buddy_screen
+        if state=='buddy_profile_confirm':h.update_user(sender,state='buddy_profile_name');return buddy_screen(sender,'buddy_profile_name')
+        if state=='buddy_profile_name':return show(sender)
+        from profile_navigation import show_profile
+        return show_profile(sender)
+    if state.startswith('match_existing_'):
+        from match_previous import show
+        return show(sender)
+    if state=='buddy_requests':h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
+    if state.startswith('buddy_request_'):return h.handle_buddy_request_command(sender,'requests')
+    if state=='match_seen':return h.show_match_alternatives(sender)
+    if state=='confirm_match':
+        from match_previous import show
+        return show(sender)
+    if state.startswith('match_request_'):
+        from connection_requests import current_screen as request_screen
+        previous={'match_request_name':'confirm_match','match_request_message':'match_request_name','match_request_review':'match_request_message'}[state]
+        h.update_user(sender,state=previous)
+        return h.current_match_choice(sender) if previous=='confirm_match' else request_screen(sender,previous)
     if state.startswith(('contact_share_','contact_chat_')):
         from match_chat import list_connections
         h.update_user(sender,state='main_menu');return list_connections(sender)
@@ -149,6 +186,16 @@ def go_back(sender,state):
         h.update_user(sender,state=previous);return current_screen(sender,previous)
     h.update_user(sender,state='main_menu');return h.show_careconnect_menu(sender)
 
+def registration_language_choices(message):
+    aliases={'english':'1','inggeris':'1','bahasa inggeris':'1','英语':'1','英文':'1',
+             'mandarin':'2','chinese':'2','mandarin chinese':'2','中文':'2','华语':'2','華語':'2',
+             'malay':'3','melayu':'3','bahasa melayu':'3','bahasa malaysia':'3','马来语':'3','馬來語':'3',
+             'tamil':'4','தமிழ்':'4','other':'5','others':'5','lain':'5'}
+    parts=re.split(r'\s*(?:,|&|/|\band\b|\bdan\b|和|与|與|及)\s*',message.strip().casefold())
+    if not parts or any(part not in aliases for part in parts):return None
+    return ','.join(dict.fromkeys(aliases[part] for part in parts))
+
+
 def prepare(sender,text,user):
     """Return (handler input, optional fixed reply). No inferred privileged actions."""
     import handlers as h
@@ -165,8 +212,17 @@ def prepare(sender,text,user):
     alias=notification_alias(command)
     if alias:return alias,None
     if command in {'notifications','notifications on','notifications off','stop notifications','stop alerts','unsubscribe','stop'}:return text,None
-    if state in {'confirm_match','match_alternatives'} and command.strip(' .?!') in {'anyone else','someone else','another buddy','another match','next buddy','next match','show me someone else','show another buddy','orang lain','ada orang lain','换一个','換一個','还有别人吗','還有別人嗎'}:
+    if (state in {'confirm_match','match_alternatives','match_seen'} or state.startswith('match_existing_')) and command.strip(' .?!') in {'previous suggestions','previous matches','show previous suggestions','show earlier suggestions','go back to previous suggestions'}:
+        from match_previous import show
+        return text,show(sender)
+    if (state in {'confirm_match','match_alternatives'} or state.startswith('match_existing_')) and command.strip(' .?!') in {'anyone else','someone else','another buddy','another match','next buddy','next match','show me someone else','show another buddy','orang lain','ada orang lain','换一个','換一個','还有别人吗','還有別人嗎'}:
         return 'next buddy',None
+    if command in {'buddy profile','my buddy profile'}:return text,None
+    if not private_field(state) and not state.startswith(('buddy_registration_','match_request_','buddy_contact_')) and re.search(r'\b(?:whatsapp|contact)\b',command) and re.search(r'\b(?:share|sharing|agree|permission|disclose)\b',command) and re.search(r'\b(?:how|where|can|want|like|ready)\b',command):
+        from match_chat_store import accepted_connections
+        from match_chat import screen,list_connections
+        connections=accepted_connections(sender)
+        return text,screen(sender,connections[0]) if len(connections)==1 else list_connections(sender)
     if not private_field(state):
         normalized=unicodedata.normalize('NFKC',text).strip().replace('،',',').replace('、',',')
         if re.fullmatch(r'[\d,\s.。]+',normalized):
@@ -182,6 +238,11 @@ def prepare(sender,text,user):
         ai.save_style(sender,style)
         context.update(language=explicit,style=style)
         return text,'Language updated. Your current progress is unchanged.\n\n'+current_screen(sender,state)
+    if ai.language_switch_request(text) and free:
+        return text,"Which language should I use for my replies? Your application answer has not been saved and your current step is unchanged.\nType 'language' to choose.\n\n"+current_screen(sender,state)
+    if state in {'buddy_registration_languages','buddy_registration_edit_languages'}:
+        selections=registration_language_choices(text)
+        if selections:return selections,None
     if command=='language' and state!='language_selection':
         ai.resume_language_screen(sender,state)
         return text,None
@@ -222,17 +283,23 @@ def prepare(sender,text,user):
         return '2',None
     if command in SHORT:return text,None
     options=options_for(state)
+    if state=='match_seen':
+        from match_previous import choices as previous_choices
+        options={number:'Review previous suggestion '+number for number in previous_choices(sender)}
+    if state.startswith('match_existing_'):options={'1':'Return to current accepted connection','2':'Find someone else'}
     # Main-menu intent is interpreted by its established classifier; use this call for language only.
     result=ai.classify(text,state,options,allow_choices=bool(options))
     if result is None:return text,None
     registration_language=state in {'buddy_registration_languages','buddy_registration_edit_languages'}
-    if result['language'] and not registration_language:
+    registration_form=state.startswith('buddy_registration_')
+    use_reply_language=not registration_language and (not registration_form or result['explicit_language_switch'])
+    if result['language'] and use_reply_language:
         hint=text
         if result['explicit_language_switch'] and not any(term in command for term in ('pinyin','romanised','romanized','english letters','latin letters','chinese characters','汉字','漢字')):hint=''
         style=response_style(result['language'],result['style'],hint)
         h.set_language_preference(sender,result['language']);ai.save_style(sender,style)
         context.update(language=result['language'],style=style)
-    if result['explicit_language_switch'] and not registration_language and result['language']:
+    if result['explicit_language_switch'] and use_reply_language and result['language']:
         return text,'Language updated. Your current progress is unchanged.\n\n'+current_screen(sender,state)
     if result['action']=='urgent' and result['route_confident']:
         # Fixed verified-behaviour message only: no invented helplines, promises or dispatch.
@@ -251,7 +318,10 @@ def prepare(sender,text,user):
     if not result['route_confident']:return text,None
     action=result['action'];choices=result['choices']
     if action=='help':return text,'Here is what you can do on this screen. No changes have been made.\n\n'+current_screen(sender,state)
-    if action=='next_match' and state in {'confirm_match','match_alternatives'}:return 'next buddy',None
+    if action=='previous_matches' and (state in {'confirm_match','match_alternatives','match_seen'} or state.startswith('match_existing_')):
+        from match_previous import show
+        return text,show(sender)
+    if action=='next_match' and (state in {'confirm_match','match_alternatives'} or state.startswith('match_existing_')):return 'next buddy',None
     if action=='back':
         return text,go_back(sender,state)
     if action=='cancel':

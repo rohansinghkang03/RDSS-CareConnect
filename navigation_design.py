@@ -3,14 +3,14 @@ import re
 import uuid
 from conversation_context import current
 
-COMMAND=r"'(?:menu|back|profile|resources|my status|status|application status|requests(?: [0-9]+)?|request [0-9]+|accept [0-9]+|decline [0-9]+|admin logout|admin login|report status|my chats|chat [0-9]+|stop chat [0-9]+|notifications(?: on| off)?|language|cancel|find a buddy|contact rdss|applications)'"
-LABELS={'profile':'Profile and privacy settings','resources':'Resource Hub','my status':'Request and application status','status':'Check your connection request','application status':'Check your application','requests':'Incoming connection requests','admin logout':'Sign out','admin login':'Sign in as an administrator','report status':'Check your report','my chats':'Your accepted connections','notifications':'Manage update alerts','notifications on':'Turn update alerts on','notifications off':'Stop update alerts','language':'Change language','cancel':'Cancel this step','find a buddy':'Find a Support Buddy','contact rdss':'Contact RDSS','applications':'View pending applications'}
+COMMAND=r"'(?:menu|back|profile|resources|my status|status|application status|requests(?: [0-9]+)?|request [0-9]+|accept [0-9]+|decline [0-9]+|admin logout|admin login|report status|my chats|chat [0-9]+|stop chat [0-9]+|notifications(?: on| off)?|language|cancel|find a buddy|contact rdss|applications|previous suggestions|buddy profile)'"
+LABELS={'profile':'Profile and privacy settings','resources':'Resource Hub','my status':'Request and application status','status':'Check your connection request','application status':'Check your application','requests':'Incoming connection requests','admin logout':'Sign out','admin login':'Sign in as an administrator','report status':'Check your report','my chats':'Your accepted connections','notifications':'Manage update alerts','notifications on':'Turn update alerts on','notifications off':'Stop update alerts','language':'Change language','cancel':'Cancel this step','find a buddy':'Find a Support Buddy','contact rdss':'Contact RDSS','applications':'View pending applications','previous suggestions':'Review earlier buddies in this search','buddy profile':'Your Support Buddy profile and display name'}
 
 def organize(sender,reply,state):
     if not isinstance(reply,str):return reply
     context=current.get()
     # Literal command names are protected from translation, not from layout cleanup.
-    private=[value for value in (context['protected'] if context else ()) if not re.fullmatch(COMMAND,value)]
+    private=[value for value in (context['protected'] if context else ()) if not re.fullmatch(COMMAND,value) and not value.isdecimal()]
     if context:context['fixed_localized']=False
     placeholders={};nonce=uuid.uuid4().hex[:12]
     for index,value in enumerate(sorted(private,key=len,reverse=True)):
@@ -48,15 +48,21 @@ def organize(sender,reply,state):
     elif state=='language_selection':commands=[('back','Previous screen'),('menu','Show language choices')]
     else:
         back='Main menu'
-        if state.startswith('profile_') or state=='profiling_consent':back='Previous profile screen'
-        elif state.startswith('buddy_registration_'):back='Previous application step'
+        if state.startswith(('buddy_profile_','buddy_contact_')):back='Support Buddy profile' if state!='buddy_profile_menu' else 'Profile and privacy settings'
+        elif state.startswith('profile_') or state=='profiling_consent':back='Previous profile screen'
+        elif state.startswith('buddy_registration_') and state!='buddy_registration_submitted':back='Previous application step'
         elif state=='resources_detail':back='Resource categories'
         elif state.startswith(('contact_share_','contact_chat_')):back='Your accepted connections'
-        elif state=='confirm_match':back='Matching options'
+        elif state.startswith('match_existing_'):back='Previously shown buddies'
+        elif state=='confirm_match':back='Previously shown buddies'
+        elif state=='match_seen':back='Matching options'
+        elif state.startswith('match_request_'):back='Previous request step'
+        elif state.startswith('buddy_request_'):back='Incoming connection requests'
         elif state in {'ai_onboarding_confirm','match_alternatives'}:back='Matching preferences'
         commands=[('back',back),('menu','Main menu')]
         if state!='main_menu':commands.append(('status','Check your connection request'))
-        if state=='confirm_match':commands.append(('next buddy','See another Support Buddy'))
+        if state=='confirm_match' or state.startswith('match_existing_'):commands.append(('next buddy','See another Support Buddy'))
+        if state in {'confirm_match','match_alternatives','match_seen'}:commands.append(('previous suggestions','Review earlier buddies in this search'))
         if state=='ai_chat':commands.extend([('resources','Resource Hub'),('profile','Profile and privacy settings')])
         if state=='main_menu':commands.append(('notifications','Manage update alerts'))
     for quoted in discovered:
@@ -75,7 +81,7 @@ def organize(sender,reply,state):
         if label and key not in {c[0] for c in commands}:commands.append((key,label))
     # Conversational guidance only on non-sensitive choice screens.
     if re.search(r'^\s*[1-9][.]',body,re.M):
-        sensitive=state in {'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm','buddy_registration_consent','buddy_registration_cancel','confirm_match'} or state.startswith(('admin_review_','contact_share_'))
+        sensitive=state in {'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm','buddy_registration_consent','buddy_registration_cancel','confirm_match','match_request_review','buddy_profile_confirm','buddy_contact_consent'} or state.startswith(('admin_review_','contact_share_'))
         private_admin=state.startswith(('admin_pin','admin_note_'))
         if not sensitive and not private_admin:
             invitation="Tell me what you're looking for! Alternatively, you can use the numbered options below."

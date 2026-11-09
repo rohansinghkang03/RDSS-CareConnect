@@ -109,12 +109,11 @@ REGISTRATION_QUESTIONS = {
     "contact_methods": "How would you prefer to communicate?",
     "introduction": "Write a short introduction about yourself (up to 500 characters), or type 'skip'.\nThis may be shared with potential matches."
 }
+from connection_requests import buddy_notice
 CONSENT_TEXT = (
+    buddy_notice()+
     "I agree to receive WhatsApp updates about my Support Buddy application and incoming connection requests. I can type 'notifications off' to stop alerts. "
-    "I agree that RDSS may contact me about my Support Buddy application and "
-    "share my public profile with potential matches: my display name (or 'Support Buddy'), "
-    "languages, caregiving experience, support offered, availability, contact preferences "
-    "and introduction. My full name and contact details are not part of that public profile."
+    "I agree that RDSS may contact me about my Support Buddy application and share my public profile with potential matches: my display name (or 'Support Buddy'), languages, caregiving experience, support offered, availability, contact preferences and introduction. My full name and contact details are not part of that public profile."
 )
 
 
@@ -335,6 +334,16 @@ def admin_application_detail(application_id):
     if application["admin_notes"]:
         first_choice=lines.index('1. Approve')
         lines.insert(first_choice, f"Private note: {application['admin_notes']}\n")
+    from connection_requests import enabled
+    if enabled():
+        complete = bool(application['verified_at'] and application.get('verified_by_name'))
+        lines = [line for line in lines if not line.startswith('Verified by an administrator on ') and line != 'Verification: Pending verification']
+        if complete:
+            lines.insert(12, 'Verified by: ' + application['verified_by_name'] + ' on ' + format_sgt_timestamp(application['verified_at']))
+            lines = [line for line in lines if line != '3. Mark verification complete']
+        else:
+            lines.insert(12, 'Verification: Required before approval')
+            lines = [line for line in lines if line != '1. Approve']
     return "\n".join(lines)
 
 
@@ -458,6 +467,11 @@ def handle_admin_message(sender, text, state):
                     "Type 'menu' to return to the admin menu.")
         return "Please choose an option.\n\n" + admin_menu_reply()
 
+    from connection_requests import enabled as connection_updates_enabled
+    if connection_updates_enabled() and state.startswith('admin_verify_'):
+        from admin_verification import handle
+        return handle(sender, text, state)
+
     if state == "admin_applications":
         if not list_admin_applications("pending", 1, 1)[0]:
             update_user(sender, state="admin_menu")
@@ -488,6 +502,9 @@ def handle_admin_message(sender, text, state):
             return "Type the private admin note to save, or type 'cancel'."
         if command not in ("1", "2", "3"):
             return "Please choose 1, 2, 3, 4 or 5.\n\n" + admin_application_detail(application_id)
+        if command == '3' and connection_updates_enabled():
+            from admin_verification import begin
+            return begin(sender, application)
         action = {"1": "approve", "2": "reject", "3": "verify"}[command]
         try:
             review_support_buddy_application(
@@ -608,6 +625,8 @@ def handle_registration(sender, text, state):
         limit = 500 if step == "introduction" else 100
         if len(answer) > limit:
             return "Please use no more than " + str(limit) + " characters.\n\n" + registration_prompt(step)
+        if step=='display_name' and command!='skip' and not any(c.isalpha() for c in answer):
+            return "Please enter a name or nickname, rather than a menu number. You can also type 'skip' to use Support Buddy."
         value = "" if step in ("display_name", "introduction") and command == "skip" else answer
     changes = {fields[step]: value}
     if step == "rdss":
@@ -617,6 +636,14 @@ def handle_registration(sender, text, state):
         update_user(sender, full_name=value)
     draft = get_support_buddy_draft(sender)
     return registration_destination(sender, "review" if editing else next_registration_step(draft))
+
+
+def request_sender_description(sender,request):
+    from connection_requests import details_for_buddy
+    details=details_for_buddy(sender,request['id'])
+    if not details:return "From: Name not provided on this earlier request\nMessage: No personal introduction was included\n"
+    protect(details['chosen_name'],details['message'])
+    return 'From: '+details['chosen_name']+'\nMessage: '+(details['message'] or 'No personal message')+'\n'
 
 
 def handle_buddy_request_command(sender, text):
@@ -637,6 +664,7 @@ def handle_buddy_request_command(sender, text):
         )
 
     if command == "requests":
+        update_user(sender,state='buddy_requests')
         requests, has_more = get_buddy_requests(sender, page=number)
         if not requests:
             return (
@@ -647,11 +675,16 @@ def handle_buddy_request_command(sender, text):
         for request in requests:
             lines.append(
                 "\nRequest #" + str(request["id"]) + "\n"
+                + request_sender_description(sender,request)
                 + "Support wanted: " + (request["support_type"] or "Not recorded") + "\n"
                 + "Preferred time: " + (request["availability"] or "Not recorded")
             )
         example = str(requests[0]["id"])
-        lines.append("\nUse the request ID: 'request " + example + "', 'accept " + example + "' or 'decline " + example + "'.")
+        from connection_requests import show_accept_notice
+        for request in requests:
+            notice=show_accept_notice(sender,request['id'])
+            if notice:lines.append('\n'+notice)
+        lines.extend(["Type 'request "+example+"' to view this request.","Type 'accept "+example+"' to accept this request.","Type 'decline "+example+"' to decline this request."])
         if has_more:
             lines.append("Next page: 'requests " + str(number + 1) + "'.")
         lines.append("Type 'requests' to refresh or 'menu' for the main menu.")
@@ -661,6 +694,7 @@ def handle_buddy_request_command(sender, text):
         request = get_buddy_request(sender, number)
         if request is None:
             return "That request was not found for your account. Type 'requests' to see your requests."
+        update_user(sender,state='buddy_request_'+str(number))
         reply = (
             "Connection request #" + str(number) + "\n"
             + "Status: " + request["status"].capitalize() + "\n"
@@ -668,11 +702,18 @@ def handle_buddy_request_command(sender, text):
             + "Preferred time: " + (request["availability"] or "Not recorded")
         )
         if request["status"] == "pending":
-            reply += "\n\nType 'accept " + str(number) + "' or 'decline " + str(number) + "'."
+            from connection_requests import show_accept_notice
+            notice=show_accept_notice(sender,number)
+            if notice:reply+='\n\n'+notice
+            reply += "\n\nType 'accept " + str(number) + "' to accept this specific request.\nType 'decline " + str(number) + "' to decline this request."
         return reply + "\nType 'requests' for your inbox."
 
     decision = "accepted" if command == "accept" else "declined"
     outcome, request = respond_to_buddy_request(sender, number, decision)
+    if outcome=='buddy_consent_required':
+        return "Please first agree to the Support Buddy WhatsApp-sharing notice. Type 'buddy profile' and choose WhatsApp-sharing permission. Your application and this request stay in place; no number has been shared."
+    if outcome=='notice_required':
+        return "Before accepting, please read how this connection shares WhatsApp numbers. Nothing has been accepted yet.\n\n"+handle_buddy_request_command(sender,'request '+str(number))
     if outcome == "not_found":
         return "That request was not found for your account. Type 'requests' to see your requests."
     if outcome == "unavailable":
@@ -694,10 +735,29 @@ def handle_buddy_request_command(sender, text):
     return reply + "\nType 'requests' to see other pending requests."
 
 
+def existing_match_message(sender,match,request_id):
+    protect(match['name'])
+    update_user(sender,state='match_existing_'+str(request_id))
+    return caregiver_message(sender,"You're already connected with "+match['name']+". 💜\n\nTheir profile also lists "+', '.join(match['offered_support'])+" and these usual chat times: "+', '.join(match['offered_times'])+".\n\nWould you like to return to this connection or explore someone else? Your existing connection will stay in place.\n\n1. Return to this connection\n2. Find someone else",required_text=match['name'])
+
+
+def current_existing_match(sender,state):
+    from match_browsing import preview
+    selected=preview(sender);user=get_user(sender)
+    if selected:
+        candidate=next((m for m in find_matches(user) if m['buddy_id']==selected['buddy_id'] and m['sender']==selected['buddy_sender']),None)
+        if candidate:return existing_match_message(sender,candidate,int(state.rsplit('_',1)[1]))
+    return caregiver_message(sender,"Type 'my chats' to view your current accepted connections, or 'menu' for the main menu.")
+
+
 def show_match_choice(sender, match, user):
     """Display one candidate; only the later explicit confirmation sends a request."""
     save_match_preview(sender,match,user)
     protect(match['name'])
+    from match_browsing import accepted_with
+    existing=accepted_with(sender,match['sender'])
+    if existing:return existing_match_message(sender,match,existing['id'])
+
     details="\n".join('- '+item for item in match['shared_preferences'])
     tier=match.get('tier','exact')
     if tier=='support':
@@ -709,6 +769,9 @@ def show_match_choice(sender, match, user):
                  +match['name']+" has a usual schedule that fits yours. They offer "
                  +', '.join(match['offered_support'])+", rather than your selected support preference. Would you like to get to know them?")
     else:opening="We may have found someone you could connect with! 💜\n\n"+match['name']
+    from connection_requests import enabled as introduction_enabled
+    if introduction_enabled():
+        return caregiver_message(sender,opening+'\n\n'+details+"\n\nThese are usual preferences, not live online availability. Would you like to continue? You'll choose a name and optional message, then review what will be shared before sending.\n\n1. Continue to my introduction\n2. No, show someone else",required_text=match['name'])
     return caregiver_message(sender,opening+'\n\n'+details+
         "\n\nThese are their usual preferences, not a promise that they are online now. They will need to accept your request."
         "\n\nWould you like to send them a connection request? We will send WhatsApp updates about this connection. Type 'notifications off' anytime to stop alerts.\n1. Yes, send request\n2. No, show someone else\n\nType 'menu' for the main menu.",required_text=match['name'])
@@ -1167,6 +1230,25 @@ def _handle_message(sender, text):
     from notifications import command as notification_command
     notice=notification_command(sender,text)
     if notice is not None:return notice
+
+    if state.startswith('match_existing_'):
+        if text=='1':
+            from match_chat import screen
+            return screen(sender,int(state.rsplit('_',1)[1]))
+        if text in {'2','next buddy'}:return show_next_match(sender)
+        if text not in {'menu','back','profile','status','my status','language','resources','help'}:return current_existing_match(sender,state)
+
+    from buddy_profile import handle as handle_buddy_profile
+    buddy_profile_reply=handle_buddy_profile(sender,original_text,state)
+    if buddy_profile_reply is not None:return buddy_profile_reply
+
+    from match_previous import handle as handle_previous
+    previous_reply=handle_previous(sender,original_text,state)
+    if previous_reply is not None:return previous_reply
+
+    from connection_requests import handle as handle_request_intro
+    intro_reply=handle_request_intro(sender,original_text,state)
+    if intro_reply is not None:return intro_reply
 
     from match_chat import handle as handle_match_chat
     chat_reply=handle_match_chat(sender,text,state)
@@ -1627,8 +1709,13 @@ def _handle_message(sender, text):
     elif state == "confirm_match":
         if text=='next buddy':return show_next_match(sender)
         if text == "1":
+            from connection_requests import enabled as intro_enabled,begin
+            if intro_enabled():return begin(sender)
             outcome, request = create_selected_match_request(sender)
             if request:protect(request.get('caregiver_name'))
+            if outcome=='accepted':
+                from match_chat import screen
+                return screen(sender,request['id'])
             if outcome == "missing":
                 # A second confirmation may arrive after the first consumed the preview.
                 if get_user(sender)["state"] == "match_pending":

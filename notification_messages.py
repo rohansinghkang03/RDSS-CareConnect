@@ -10,6 +10,12 @@ MESSAGES={
  'chat_ready':"Your connection is ready for a chat 💜\nYou've both agreed to share your WhatsApp numbers. You decide when to say hello.\nType 'my chats' to get your chat button."
 }
 
-def render(event,language='English'):
+def render(event,language='English',request_id=None,ready=False):
     # The worker applies the established presentation language without exposing records.
-    return MESSAGES[event]+"\n\nYou can type these other commands too:\n'menu' — Main menu\n'notifications off' — Stop these alerts"
+    body=MESSAGES[event]
+    if event in {'connection_accepted','chat_ready'} and isinstance(request_id,int):
+        if ready:
+            body="Good news—your connection is ready for WhatsApp! 💜\nYou've both agreed to share your numbers for this connection. Tap the chat button to open a separate private conversation. You choose when to send the first message. CareConnect cannot read that chat.\nType 'chat "+str(request_id)+"' if you need the button again."
+        else:
+            body="Good news—your connection request was accepted! 💜\nWould you like to continue on WhatsApp? Read the number-sharing notice and choose whether to agree. Your number is not released until both permissions are in place.\nType 'chat "+str(request_id)+"' to review this connection's sharing permission."
+    return body+"\n\nYou can type these other commands too:\n'menu' — Main menu\n'notifications off' — Stop these alerts"

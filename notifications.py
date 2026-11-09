@@ -104,12 +104,22 @@ def process_one():
     import whatsapp
     from notification_messages import render
     try:
+        from connection_requests import enabled as v2_enabled
+        ready=False
+        if v2_enabled() and job[2] in {'connection_accepted','chat_ready'}:
+            import match_chat_store
+            try:ready=match_chat_store.inspect(job[1],job[3])['state']=='ready'
+            except PermissionError:pass
         from conversation_context import conversation
         from conversation_presentation import render_reply
         with conversation(presentation[0] or 'English',presentation[1]):
             from navigation_design import organize
-            body=render_reply(job[1],organize(job[1],render(job[2]),presentation[2]))
-        provider=whatsapp.send_message(job[1],body)
+            body=render_reply(job[1],organize(job[1],render(job[2],request_id=job[3],ready=ready),presentation[2]))
+        if ready:
+            from match_chat import ChatReply,button_label
+            from match_chat_delivery import send as send_chat
+            provider=send_chat(job[1],ChatReply(body,job[3],button_label(presentation[0],presentation[1])))
+        else:provider=whatsapp.send_message(job[1],body)
     except whatsapp.WhatsAppRejected:_finish(job[0],'failed')
     except Exception:_finish(job[0],'unknown')
     else:_finish(job[0],'accepted',provider)

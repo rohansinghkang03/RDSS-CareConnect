@@ -60,6 +60,9 @@ def show_profile(sender, notice=None):
         '5. Continue AI Chat\n\n'
         "Choose a number. Type 'menu' anytime for the main menu."
     )
+    from connection_requests import enabled as connection_updates_enabled
+    if connection_updates_enabled():
+        template=template.replace('5. Continue AI Chat\n\n','5. Continue AI Chat\n6. My Support Buddy profile / edit display name\n\n')
     if notice:
         template = notice + '\n\n' + template
     return profile_text(sender, template, values)
@@ -131,6 +134,11 @@ def handle_profile_navigation(sender, text, state, original_text):
         return None
 
     if state == 'profile_menu':
+        from connection_requests import enabled as connection_updates_enabled
+        if text.strip()=='6' and connection_updates_enabled():
+            from buddy_profile import show
+            return show(sender)
+
         if text == '1':
             if profiles.get_profiling_consent(sender) != 'granted':
                 return consent_prompt(sender)

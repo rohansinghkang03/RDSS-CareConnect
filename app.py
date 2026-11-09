@@ -144,12 +144,17 @@ def health():
                 alerts_enabled=notifications_enabled()
                 cur.execute("SELECT to_regclass('notification_preferences') IS NOT NULL AND to_regclass('notification_outbox') IS NOT NULL")
                 alerts_ready=cur.fetchone()[0] if alerts_enabled else True
+                from connection_requests import enabled as connection_updates_enabled
+                connection_updates=connection_updates_enabled()
+                cur.execute("SELECT to_regclass('connection_request_drafts') IS NOT NULL AND to_regclass('connection_request_details') IS NOT NULL AND to_regclass('connection_accept_notices') IS NOT NULL AND to_regclass('buddy_profile_edit_drafts') IS NOT NULL AND to_regclass('buddy_profile_edits') IS NOT NULL AND to_regclass('buddy_whatsapp_consent') IS NOT NULL AND to_regclass('admin_verification_drafts') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='support_buddy_applications' AND column_name='verified_by_name')")
+                connection_updates_ready=cur.fetchone()[0] if connection_updates else True
         ready=ready and (Path(__file__).parent/'report_templates'/'CareConnectStatistics_Template.xlsx').is_file()
-        return {'status':'ok' if ready and conversation_ready and chat_ready and alerts_ready else 'unavailable',
+        return {'status':'ok' if ready and conversation_ready and chat_ready and alerts_ready and connection_updates_ready else 'unavailable',
                 'reporting':'ready' if ready else 'unavailable',
                 'conversation':'ready' if conversation_ready else 'unavailable',
                 'match_chat':('ready' if chat_ready else 'unavailable') if chat_enabled else 'disabled',
-                'notifications':('ready' if alerts_ready else 'unavailable') if alerts_enabled else 'disabled'},200 if ready and conversation_ready and chat_ready and alerts_ready else 503
+                'notifications':('ready' if alerts_ready else 'unavailable') if alerts_enabled else 'disabled',
+                'connection_updates':('ready' if connection_updates_ready else 'unavailable') if connection_updates else 'disabled'},200 if ready and conversation_ready and chat_ready and alerts_ready and connection_updates_ready else 503
     except Exception:
         return {'status':'unavailable','reporting':'unavailable'},503
     finally:

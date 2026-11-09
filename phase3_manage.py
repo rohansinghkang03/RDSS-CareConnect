@@ -16,7 +16,7 @@ RETENTION={
  'caregiver_profile_suggestions':'created_at','caregiver_profile_fields':'updated_at',
  'conversation_messages':'created_at',
 }
-OPTIONAL_RETENTION={'match_search_sessions':'updated_at','notification_outbox':'created_at','notification_preferences':'updated_at','communication_preferences':'updated_at','match_chat_permissions':'updated_at',
+OPTIONAL_RETENTION={'admin_verification_drafts':'created_at','buddy_whatsapp_consent':'updated_at','buddy_profile_edit_drafts':'created_at','buddy_profile_edits':'changed_at','connection_request_drafts':'updated_at','connection_request_details':'shared_at','connection_accept_notices':'shown_at','match_search_sessions':'updated_at','notification_outbox':'created_at','notification_preferences':'updated_at','communication_preferences':'updated_at','match_chat_permissions':'updated_at',
                     'match_chat_deliveries':'created_at','match_chat_prompts':'shown_at'}
 
 def retention_scopes(cursor,scopes=None):

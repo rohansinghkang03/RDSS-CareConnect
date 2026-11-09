@@ -412,10 +412,18 @@ def submit_support_buddy_application(sender, consent_text):
                 "review_version = support_buddy_applications.review_version + 1",
                 (sender,) + tuple(values[key] for key in SUPPORT_BUDDY_FIELDS) + (now,)
             )
+            from connection_requests import enabled as connection_updates_enabled
+            if connection_updates_enabled():
+                connection.execute("UPDATE support_buddy_applications SET verified_by_name=NULL WHERE sender=?", (sender,))
             connection.execute("DELETE FROM support_buddy_drafts WHERE sender = ?", (sender,))
             connection.execute(
                 "UPDATE users SET state = 'buddy_registration_submitted' WHERE sender = ?", (sender,)
             )
+            from connection_requests import enabled as connection_updates_enabled,buddy_notice,set_upfront
+            if connection_updates_enabled():
+                if buddy_notice() not in consent_text:raise ValueError('Read the current WhatsApp-sharing notice before submitting')
+                buddy=connection.execute('SELECT id FROM support_buddy_applications WHERE sender=?',(sender,)).fetchone()
+                set_upfront(connection,sender,buddy['id'],True)
             from notifications import subscribe,enqueue
             subscribe(connection,sender)
             application=connection.execute('SELECT id,review_version FROM support_buddy_applications WHERE sender=?',(sender,)).fetchone()
@@ -639,6 +647,12 @@ def create_selected_match_request(requester):
                 connection.execute("UPDATE users SET state = 'main_menu' WHERE sender = ?", (requester,))
                 return "unavailable", None
 
+            accepted=connection.execute("SELECT * FROM match_requests WHERE status='accepted' AND ((requester=? AND buddy_sender=?) OR (requester=? AND buddy_sender=?)) ORDER BY id DESC LIMIT 1",(requester,preview['buddy_sender'],preview['buddy_sender'],requester)).fetchone()
+            if accepted:
+                connection.execute('DELETE FROM match_previews WHERE requester=?',(requester,))
+                return 'accepted',dict(accepted)
+            from connection_requests import enabled as intro_enabled,validated_for_send
+            introduction=validated_for_send(connection,requester,preview) if intro_enabled() else None
             # A retried confirmation or another search must not duplicate a pending request.
             existing = connection.execute("""
                 SELECT * FROM match_requests
@@ -658,6 +672,11 @@ def create_selected_match_request(requester):
                 request = connection.execute(
                     "SELECT * FROM match_requests WHERE id = ?", (cursor.lastrowid,)
                 ).fetchone()
+                if introduction:
+                    from connection_requests import NOTICE,grant
+                    connection.execute('INSERT INTO connection_request_details(request_id,chosen_name,message,notice_version) VALUES(?,?,?,?)',(request['id'],introduction['chosen_name'],introduction['message'],NOTICE))
+                    grant(connection,request,requester)
+                    connection.execute('DELETE FROM connection_request_drafts WHERE sender=?',(requester,))
                 from notifications import subscribe,enqueue
                 subscribe(connection,requester)
                 enqueue(connection,preview['buddy_sender'],'connection_request',request['id'],request['id'])
@@ -725,10 +744,20 @@ def respond_to_buddy_request(sender, request_id, decision):
                 return "already_resolved", dict(row)
             if decision == "accepted" and not _eligible_buddy(connection, row["buddy_id"], sender):
                 return "unavailable", dict(row)
+            from connection_requests import enabled as intro_enabled,acceptance_authorized
+            if decision=='accepted' and intro_enabled():
+                from connection_requests import upfront_authorized
+                if not upfront_authorized(connection,sender,row['buddy_id'],lock=True):return 'buddy_consent_required',dict(row)
+            if decision=='accepted' and intro_enabled() and not acceptance_authorized(connection,row,sender):
+                return 'notice_required',dict(row)
             connection.execute("""
                 UPDATE match_requests SET status = ?, responded_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND buddy_sender = ? AND status = 'pending'
             """, (decision, request_id, sender))
+            if decision=='accepted' and intro_enabled():
+                from connection_requests import grant
+                grant(connection,row,sender)
+                connection.execute('DELETE FROM connection_accept_notices WHERE request_id=? AND sender=?',(request_id,sender))
             from notifications import enqueue
             enqueue(connection,row['requester'],'connection_'+decision,request_id,request_id)
             result = dict(row)
@@ -864,7 +893,12 @@ def get_admin_review_events(application_id):
         connection.close()
 
 
-def review_support_buddy_application(application_id, action, notes, actor, version):
+def review_support_buddy_application(application_id, action, notes, actor, version, verifier_name=None):
+    from connection_requests import enabled
+    named_verification = enabled()
+    if named_verification and action == "verify":
+        from admin_verification import validate_name
+        verifier_name = validate_name(verifier_name or "")
     if action not in ("notes", "verify", "approve", "reject"):
         raise ValueError("Unknown review action.")
     if len(notes) > 4000:
@@ -884,11 +918,13 @@ def review_support_buddy_application(application_id, action, notes, actor, versi
                 raise ValueError("This application changed since you opened it. Reload it before saving.")
             if action != "notes" and row["status"] != "pending":
                 raise ValueError("This application has already been reviewed.")
-            if action == "verify" and not row["verification_required"]:
+            if action == "verify" and not named_verification and not row["verification_required"]:
                 raise ValueError("This applicant does not need extra verification.")
-            if action == "verify" and row["verified_at"]:
+            if action == "verify" and row["verified_at"] and (not named_verification or row["verified_by_name"]):
                 raise ValueError("Verification is already complete.")
             if action == "approve":
+                if named_verification and (not row["verified_at"] or not row["verified_by_name"]):
+                    raise ValueError("Complete verification and record the verifying administrator name before approving.")
                 if row["verification_required"] and not row["verified_at"]:
                     raise ValueError("Complete non-member verification before approving.")
                 if not row["consent"] or not row["consent_at"] or not row["consent_text"]:
@@ -897,6 +933,8 @@ def review_support_buddy_application(application_id, action, notes, actor, versi
             now = connection.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0]
             if action == "verify":
                 updates.update(verified_at=now, verified_by=actor)
+                if named_verification:
+                    updates["verified_by_name"] = verifier_name
             elif action in ("approve", "reject"):
                 updates.update(status="approved" if action == "approve" else "rejected",
                                reviewed_at=now, reviewed_by=actor)
@@ -906,7 +944,7 @@ def review_support_buddy_application(application_id, action, notes, actor, versi
             )
             connection.execute(
                 "INSERT INTO admin_review_events (application_id, action, actor, notes) VALUES (?, ?, ?, ?)",
-                (application_id, action, actor, notes)
+                (application_id, action, actor, ("Verified by: " + verifier_name + "\n" + notes) if named_verification and action == "verify" else notes)
             )
             if action in {'approve','reject','verify'}:
                 from notifications import enqueue

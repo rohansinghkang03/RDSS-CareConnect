@@ -51,3 +51,10 @@ def remember_current(sender,user,matches):
         try:
             with c:remember(c,sender,match,user)
         finally:c.close()
+
+def accepted_with(sender,buddy_sender):
+    c=get_connection()
+    try:
+        row=c.execute("SELECT * FROM match_requests WHERE status='accepted' AND ((requester=? AND buddy_sender=?) OR (requester=? AND buddy_sender=?)) ORDER BY id DESC LIMIT 1",(sender,buddy_sender,buddy_sender,sender)).fetchone()
+        return dict(row) if row else None
+    finally:c.close()
