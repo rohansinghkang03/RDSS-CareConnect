@@ -3,6 +3,9 @@ import re
 
 MALAY_LANGUAGES = {'malay', 'bahasa melayu', 'bahasa malaysia'}
 MALAY_PROFILE_LINES = {
+    "Private profile — not shared with other caregivers. Send 'privacy details' to learn more.": "Profil peribadi — tidak dikongsi dengan penjaga lain. Taip 'privacy details' untuk maklumat lanjut.",
+    '6. My Support Buddy profile / edit display name': '6. Profil Rakan Sokongan saya / edit nama paparan',
+
     "Type 'back' for the previous profile screen.": "Taip 'back' untuk kembali ke skrin profil sebelumnya.",
     'My caregiver profile 💜': 'Profil penjaga saya 💜',
     'Profile suggestions: Enabled': 'Cadangan profil: Diaktifkan',

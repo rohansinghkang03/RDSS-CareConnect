@@ -162,7 +162,7 @@ class LocalConnectionUpdates(unittest.TestCase):
         rid=self.sent();reply=base.handlers.handle_message(p5.BUD,'requests')
         self.assertEqual(reply.count('From: Test Caregiver'),1)
         self.assertNotIn('Previous application step',reply)
-        self.assertIn("'accept "+str(rid)+"' — Accept this connection request",reply)
+        self.assertIn("Type 'accept "+str(rid)+"' to accept this request.",reply)
         base.handlers.handle_message(p5.BUD,'request '+str(rid))
         self.assertEqual(base.database.get_user(p5.BUD)['state'],'buddy_request_'+str(rid))
         base.handlers.handle_message(p5.BUD,'back')
@@ -246,3 +246,75 @@ class LocalConnectionUpdates(unittest.TestCase):
             reply=base.handlers.handle_message(p5.CARE,'Synthetic Administrator')
         self.assertIn('Confirm verification',reply);self.classifier.assert_not_called()
         self.assertIsNone(base.database.get_admin_application(self.buddy)['verified_at'])
+
+    def test_commands_allow_terminal_punctuation_without_changing_private_text(self):
+        import conversation_routing as routing
+        for value in ['Chat 71.','chat 71,','chat 71!','chat 71。']:
+            prepared,reply=routing.prepare(p5.CARE,value,base.database.get_user(p5.CARE))
+            self.assertEqual(prepared,'chat 71');self.assertIsNone(reply)
+        base.database.update_user(p5.CARE,state='match_request_message')
+        user=base.database.get_user(p5.CARE)
+        prepared,reply=routing.prepare(p5.CARE,'I feel tired, especially at night.',user)
+        self.assertEqual(prepared,'I feel tired, especially at night.')
+
+    def test_notification_primary_action_is_above_secondary_navigation(self):
+        from navigation_design import organize
+        from notification_messages import render
+        reply=organize(p5.BUD,render('connection_request'),'main_menu')
+        self.assertTrue(reply.startswith("Type 'requests'"))
+        self.assertLess(reply.index("Type 'requests'"),reply.index('You can type these other commands too:'))
+
+    def test_match_yes_reminder_is_short_and_keeps_explicit_choice(self):
+        self.preview()
+        reply=base.handlers.handle_message(p5.CARE,'yes')
+        self.assertIn('Synthetic Buddy',reply)
+        self.assertIn('1. Continue',reply);self.assertIn('2. Show someone else',reply)
+        self.assertNotIn('Support: ',reply)
+        self.assertEqual(self.rows('SELECT * FROM match_requests'),[])
+
+    def test_compact_footer_and_contextual_help_preserve_current_step(self):
+        self.preview()
+        reply=base.handlers.handle_message(p5.CARE,'help')
+        self.assertIn("'previous suggestions'",reply);self.assertIn("'menu'",reply)
+        self.assertEqual(base.database.get_user(p5.CARE)['state'],'confirm_match')
+        self.assertEqual(self.rows('SELECT * FROM match_requests'),[])
+        short=base.handlers.handle_message(p5.CARE,'yes')
+        section=short.split('You can type these other commands too:')[1]
+        self.assertEqual(len(section.strip().splitlines()),3)
+        self.assertIn("'help'",section)
+        self.classifier.assert_not_called()
+
+    def test_introduction_preview_keeps_complete_draft_available_without_saving_changes(self):
+        base.database.start_support_buddy_draft(p5.CARE)
+        value='A synthetic introduction. '*18
+        base.database.update_support_buddy_draft(p5.CARE,introduction=value)
+        base.database.update_user(p5.CARE,state='buddy_registration_review')
+        review=base.handlers.registration_review(p5.CARE)
+        self.assertIn('full introduction',review);self.assertNotIn(value,review)
+        reply=base.handlers.handle_message(p5.CARE,'full introduction')
+        self.assertIn(value,reply)
+        self.assertEqual(base.database.get_support_buddy_draft(p5.CARE)['introduction'],value)
+        self.assertEqual(base.database.get_user(p5.CARE)['state'],'buddy_registration_review')
+        self.classifier.assert_not_called()
+
+    def test_admin_decisions_precede_details_and_full_introduction_requires_admin_session(self):
+        value='A synthetic introduction. '*18
+        self.rows("UPDATE support_buddy_applications SET introduction=%s,status='pending',verified_at=NULL WHERE id=%s",(value,self.buddy))
+        detail=base.handlers.admin_application_detail(self.buddy)
+        self.assertLess(detail.index('Verification:'),detail.index('Name:'))
+        self.assertLess(detail.index('3. Mark verification complete'),detail.index('Languages:'))
+        self.assertNotIn(value,detail)
+        base.database.update_user(p5.CARE,state='admin_review_'+str(self.buddy))
+        import reporting_auth
+        with patch.object(base.handlers,'ADMIN_PHONE_NUMBERS',frozenset({p5.CARE})),patch.object(base.handlers,'ADMIN_PIN','Synthetic-PIN'),patch.dict(os.environ,{'REPORTING_ENABLED':'true'}),patch.object(reporting_auth,'session_valid',return_value=False):
+            reply=base.handlers.handle_message(p5.CARE,'full introduction')
+        self.assertNotIn(value,reply);self.assertIn('expired',reply)
+
+    def test_profile_privacy_details_are_on_demand_without_changing_consent(self):
+        reply=base.handlers.handle_message(p5.CARE,'profile')
+        self.assertIn('privacy details',reply)
+        consent=base.analytics.get_profiling_consent(p5.CARE)
+        detail=base.handlers.handle_message(p5.CARE,'privacy details')
+        self.assertIn('AI chat history is separate',detail)
+        self.assertEqual(consent,base.analytics.get_profiling_consent(p5.CARE))
+        self.assertEqual(base.database.get_user(p5.CARE)['state'],'profile_menu')

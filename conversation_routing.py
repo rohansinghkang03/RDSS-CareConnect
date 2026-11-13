@@ -196,10 +196,38 @@ def registration_language_choices(message):
     return ','.join(dict.fromkeys(aliases[part] for part in parts))
 
 
+def explicit_choice_prompt(sender,state):
+    if state == 'confirm_match':
+        from match_browsing import preview
+        from connection_requests import enabled
+        chosen=preview(sender)
+        if chosen:
+            name=chosen.get('caregiver_name') or chosen.get('name') or 'this Support Buddy'
+            from conversation_context import protect
+            protect(name)
+            first='Continue to my introduction and review sharing permission' if enabled() else 'Send a connection request'
+            return 'To connect with '+name+', please reply with a number:\n\n1. '+first+'\n2. Show someone else\n\nNothing has been sent yet.'
+    choices=options_for(state)
+    if choices:
+        return 'Please reply with the number shown. Nothing has been confirmed yet.\n\n'+'\n'.join(key+'. '+label for key,label in choices.items())
+    return 'Please reply with the number shown. Nothing has been confirmed yet.\n\n'+current_screen(sender,state)
+
+
 def prepare(sender,text,user):
     """Return (handler input, optional fixed reply). No inferred privileged actions."""
     import handlers as h
     state=user['state'];command=text.strip().casefold();context=current.get()
+    # Normalize punctuation only for complete known commands, never private answers or PINs.
+    candidate=command.rstrip(' .,!?:;。！，？：；')
+    if state != 'admin_pin' and (candidate in COMMANDS or candidate in {'my chats','buddy profile','previous suggestions','admin login','admin logout','help','full introduction','privacy details'} or re.fullmatch(r'(?:chat|stop chat|requests|request|accept|decline)\s+\d{1,10}',candidate) or (not private_field(state) and re.fullmatch(r'\d{1,2}',candidate))):
+        text=candidate
+        command=candidate
+    if command == 'help' and state != 'admin_pin':
+        if context:context['expanded_navigation']=True
+        return text, 'Commands for this screen. Your progress is unchanged.'
+    if command == 'full introduction' and (state == 'buddy_registration_review' or state.startswith('admin_review_')):
+        return command,None
+    if command == 'privacy details' and state == 'profile_menu':return command,None
     if state.startswith('admin_') or command=='admin login':
         # Never send PINs, admin notes, private application records or report inputs to AI.
         if context:context.update(language='English',style='standard')
@@ -273,13 +301,13 @@ def prepare(sender,text,user):
     if command in EXPLICIT_CHOICES.get(state,{}):
         choice=EXPLICIT_CHOICES[state][command]
         if state in SENSITIVE and choice=='1':
-            return text,"I need you to confirm using the number shown so your agreement is explicit. AI cannot make this decision for you. Nothing has been confirmed yet.\n\n"+current_screen(sender,state)
+            return text,explicit_choice_prompt(sender,state)
         return choice,None
     # Literal confirmations are safe only in the screen that actually asks them.
     if state in SENSITIVE and command in {'yes','no','ya','tidak','ஆம்','இல்லை','是','否'}:
         if state=='profile_review' and command not in {'yes','ya','ஆம்','是'}:return text,None
         if command in {'yes','ya','ஆம்','是'}:
-            return text,"I need you to confirm using the number shown so your agreement is explicit. Nothing has been confirmed yet.\n\n"+current_screen(sender,state)
+            return text,explicit_choice_prompt(sender,state)
         return '2',None
     if command in SHORT:return text,None
     options=options_for(state)
@@ -337,7 +365,7 @@ def prepare(sender,text,user):
             # Edit/back/keep/do-not-send choices do not approve or delete anything.
             if choices==['2'] and state!='profiling_consent':return '2',None
             if state=='buddy_registration_consent' and choices==['3']:return '3',None
-            return text,'To make sure this is your choice, please confirm using the number shown. This action needs your explicit agreement; AI cannot make that decision for you.\n\n'+current_screen(sender,state)
+            return text,explicit_choice_prompt(sender,state)
         return ','.join(dict.fromkeys(choices)),None
     if action in {'menu','profile','my status','status','application status','requests','language'}:
         if action=='language':ai.resume_language_screen(sender,state)

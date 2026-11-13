@@ -3,7 +3,7 @@ import re
 import uuid
 from conversation_context import current
 
-COMMAND=r"'(?:menu|back|profile|resources|my status|status|application status|requests(?: [0-9]+)?|request [0-9]+|accept [0-9]+|decline [0-9]+|admin logout|admin login|report status|my chats|chat [0-9]+|stop chat [0-9]+|notifications(?: on| off)?|language|cancel|find a buddy|contact rdss|applications|previous suggestions|buddy profile)'"
+COMMAND=r"'(?:menu|back|profile|resources|my status|status|application status|requests(?: [0-9]+)?|request [0-9]+|accept [0-9]+|decline [0-9]+|admin logout|admin login|report status|my chats|chat [0-9]+|stop chat [0-9]+|notifications(?: on| off)?|language|cancel|find a buddy|contact rdss|applications|previous suggestions|buddy profile|help)'"
 LABELS={'profile':'Profile and privacy settings','resources':'Resource Hub','my status':'Request and application status','status':'Check your connection request','application status':'Check your application','requests':'Incoming connection requests','admin logout':'Sign out','admin login':'Sign in as an administrator','report status':'Check your report','my chats':'Your accepted connections','notifications':'Manage update alerts','notifications on':'Turn update alerts on','notifications off':'Stop update alerts','language':'Change language','cancel':'Cancel this step','find a buddy':'Find a Support Buddy','contact rdss':'Contact RDSS','applications':'View pending applications','previous suggestions':'Review earlier buddies in this search','buddy profile':'Your Support Buddy profile and display name'}
 
 def organize(sender,reply,state):
@@ -20,10 +20,15 @@ def organize(sender,reply,state):
     body,separator,old_section=reply.partition('You can type these other commands too:')
     discovered=re.findall(COMMAND,old_section)
     lines=[]
+    primary=[]
     for raw in body.splitlines():
         line=raw.strip()
         if re.match(r'^(?:Type|Taip) ',line) and re.search(COMMAND,line):
-            discovered.extend(re.findall(COMMAND,line));continue
+            found=re.findall(COMMAND,line)
+            if found and found[0] not in {"'menu'","'back'","'profile'","'status'","'my status'","'notifications off'","'notifications on'","'language'"}:
+                primary.append(raw)
+            else:discovered.extend(found)
+            continue
         # Keep meaningful preceding prose, but move trailing generic reminders.
         match=re.search(r"(?:^|[.!?] )(?:Type|Taip) "+COMMAND,line)
         if match and '__NAV_PRIVATE_' not in line:
@@ -34,7 +39,7 @@ def organize(sender,reply,state):
         raw=re.sub(r"^Choose (?:a|one) number[.]?(?:.*)$",'',raw)
         raw=re.sub(r"^Pilih (?:satu )?nombor[.]?(?:.*)$",'',raw)
         lines.append(raw)
-    body='\n'.join(lines).strip()
+    body='\n'.join(primary+([''] if primary else [])+lines).strip()
     body=re.sub(r'\n{3,}','\n\n',body)
     if state.startswith('admin_'):
         if state=='admin_pin':commands=[('back','Cancel login'),('menu','Cancel login and return to the main menu')]
@@ -79,12 +84,18 @@ def organize(sender,reply,state):
         elif re.fullmatch(r'request [0-9]+',key):label='View this connection request'
         elif re.fullmatch(r'requests [0-9]+',key):label='Next page of incoming requests'
         if label and key not in {c[0] for c in commands}:commands.append((key,label))
+    if context and context.get('expanded_navigation') and not state.startswith('admin_'):
+        for key in ('status','my status','my chats','profile','buddy profile','resources','language','notifications'):
+            if key not in {c[0] for c in commands}:commands.append((key,LABELS.get(key,key)))
+    expanded=bool(context and context.get('expanded_navigation'))
+    if state!='admin_pin' and not expanded:
+        commands=commands[:2]+[('help','More commands')]
     # Conversational guidance only on non-sensitive choice screens.
     if re.search(r'^\s*[1-9][.]',body,re.M):
         sensitive=state in {'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm','buddy_registration_consent','buddy_registration_cancel','confirm_match','match_request_review','buddy_profile_confirm','buddy_contact_consent'} or state.startswith(('admin_review_','contact_share_'))
-        private_admin=state.startswith(('admin_pin','admin_note_'))
+        private_admin=state.startswith(('admin_pin','admin_note_','admin_verify_'))
         if not sensitive and not private_admin:
-            invitation="Tell me what you're looking for! Alternatively, you can use the numbered options below."
+            invitation="Choose a number, or tell me what you need."
             if invitation not in body:body=re.sub(r'(?m)^(?=[ \t]*[1-9][.])',lambda _:invitation+'\n\n',body,count=1)
     # Restore protected values exactly; never rewrite a caregiver's saved wording.
     for marker,value in placeholders.items():body=body.replace(marker,value)

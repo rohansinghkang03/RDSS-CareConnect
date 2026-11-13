@@ -69,7 +69,7 @@ class FeedbackTests(p5.MatchChatTests):
             self.assertEqual(reply.count('You can type these other commands too:'),1)
             body,section=reply.split('You can type these other commands too:')
             self.assertNotIn("Type '",body);self.assertNotIn('Reply with a number',body)
-            self.assertIn("Tell me what you're looking for!",body)
+            self.assertIn("Choose a number, or tell me what you need.",body)
             self.assertLess(section.index("'back'"),section.index("'menu'"))
 
     def test_restricted_action_explains_manual_control_without_changing_data(self):
@@ -84,7 +84,7 @@ class FeedbackTests(p5.MatchChatTests):
         self.rows("UPDATE support_buddy_applications SET admin_notes='Synthetic private note' WHERE id=%s",(self.buddy,))
         reply=base.handlers.admin_application_detail(self.buddy)
         self.assertNotIn('Verification: Not required',reply)
-        self.assertLess(reply.index('Private note:'),reply.index('1. Approve'))
+        self.assertLess(reply.index('1. Approve'),reply.index('Private note:'))
         self.rows('UPDATE support_buddy_applications SET verification_required=1,verified_at=NULL WHERE id=%s',(self.buddy,))
         self.assertIn('Pending verification',base.handlers.admin_application_detail(self.buddy))
         self.rows('UPDATE support_buddy_applications SET verified_at=CURRENT_TIMESTAMP WHERE id=%s',(self.buddy,))

@@ -52,7 +52,7 @@ def show_profile(sender, notice=None):
     else:
         template += '\nNo profile information is saved.\n'
     template += (
-        '\nYour profile is private and is not shared with other caregivers by this feature.\n\n'
+        "\nPrivate profile — not shared with other caregivers. Send 'privacy details' to learn more.\n\n"
         '1. Review profile suggestions\n'
         '2. Enable suggestions / read permission details\n'
         '3. Withdraw permission and delete my profile\n'
@@ -134,6 +134,8 @@ def handle_profile_navigation(sender, text, state, original_text):
         return None
 
     if state == 'profile_menu':
+        if text.strip() == 'privacy details':
+            return profile_text(sender, "Profile privacy 💜\n\nAI profile suggestions are optional. You review each suggestion before it is saved. This feature does not share your saved profile with other caregivers. Withdraw permission from your profile menu to delete saved profile information, suggestions and unfinished edits. AI chat history is separate. WhatsApp number sharing for a buddy connection requires its own permission.\n\nType 'profile' to return, or 'menu' for the main menu.")
         from connection_requests import enabled as connection_updates_enabled
         if text.strip()=='6' and connection_updates_enabled():
             from buddy_profile import show

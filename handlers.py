@@ -138,6 +138,13 @@ def next_registration_step(draft):
     return "review"
 
 
+def introduction_preview(value):
+    value = value or 'Skipped'
+    shown = value if len(value) <= 160 else value[:160].rstrip() + '…'
+    protect(shown)
+    return shown + ("\nSend 'full introduction' to read the complete introduction." if len(value)>160 else '')
+
+
 def registration_review(sender):
     draft = get_support_buddy_draft(sender)
     if not draft:
@@ -156,9 +163,10 @@ def registration_review(sender):
             value = "Not answered"
         if field in MULTI_SELECT_FIELDS:
             value = value.replace("|", ", ")
+        if field == "introduction":value = introduction_preview(value)
         lines.append(label + ": " + str(value))
     lines += ["", "Full name is only visible to RDSS.",
-              "Extra verification: " + ("Required" if draft.get("rdss_member") == "No" else "Not required"),
+              "RDSS verification is required before approval.",
               "", "1. Continue to consent and submit", "2. Edit an answer", "3. Cancel application"]
     return "\n".join(lines)
 
@@ -317,7 +325,7 @@ def admin_application_detail(application_id):
         f"Support offered: {(application['support_types'] or '').replace('|', ', ')}",
         f"Availability: {(application['availability'] or '').replace('|', ', ')}",
         f"Contact: {(application['contact_methods'] or '').replace('|', ', ')}",
-        f"Introduction: {application['introduction'] or 'Skipped'}",
+        'Introduction: ' + introduction_preview(application['introduction']),
         f"Status: {application['status']}",
         "",
         "1. Approve",
@@ -344,7 +352,11 @@ def admin_application_detail(application_id):
         else:
             lines.insert(12, 'Verification: Required before approval')
             lines = [line for line in lines if line != '1. Approve']
-    return "\n".join(lines)
+    # Decisions first; detailed application data follows.
+    status_lines=[line for line in lines if line.startswith(('Status:', 'Verified by', 'Verification:'))]
+    actions=[line for line in lines if re.match(r'^[1-5]\. ',line)]
+    details=[line for line in lines[2:] if line not in status_lines and line not in actions and line.strip() and not line.startswith('For approval,')]
+    return "\n".join(['Support Buddy application',*status_lines,'',*actions,'Choose the number shown to make a decision.','',*details])
 
 
 def admin_application_id_for_choice(choice):
@@ -494,6 +506,10 @@ def handle_admin_message(sender, text, state):
         if application is None:
             update_user(sender, state="admin_applications")
             return admin_application_list(sender)
+        if command == 'full introduction':
+            value=application['introduction'] or 'Skipped'
+            protect(value)
+            return 'Full introduction\n\n'+value+"\n\nType 'back' for applications, or 'menu' for the admin menu."
         if command == "5":
             update_user(sender, state="admin_applications")
             return admin_application_list(sender)
@@ -569,6 +585,9 @@ def handle_registration(sender, text, state):
         # Resume drafts created by the earlier partial implementation.
         return registration_destination(sender, next_registration_step(draft))
     if state == "buddy_registration_review":
+        if command == 'full introduction':
+            value=draft.get('introduction') or 'Skipped';protect(value)
+            return 'Full introduction\n\n'+value+"\n\nYour application is unchanged. Reply 1 to continue to consent, 2 to edit, or 3 to cancel."
         if answer == "1":
             missing = next_registration_step(draft)
             if missing != "review":
@@ -771,10 +790,10 @@ def show_match_choice(sender, match, user):
     else:opening="We may have found someone you could connect with! 💜\n\n"+match['name']
     from connection_requests import enabled as introduction_enabled
     if introduction_enabled():
-        return caregiver_message(sender,opening+'\n\n'+details+"\n\nThese are usual preferences, not live online availability. Would you like to continue? You'll choose a name and optional message, then review what will be shared before sending.\n\n1. Continue to my introduction\n2. No, show someone else",required_text=match['name'])
+        return caregiver_message(sender,opening+'\n\n'+details+"\n\nThese are usual preferences; they may not be online now. They will need to accept your request.\n\nTo connect, please choose:\n1. Continue — add my introduction and review sharing permission\n2. Show someone else",required_text=match['name'])
     return caregiver_message(sender,opening+'\n\n'+details+
-        "\n\nThese are their usual preferences, not a promise that they are online now. They will need to accept your request."
-        "\n\nWould you like to send them a connection request? We will send WhatsApp updates about this connection. Type 'notifications off' anytime to stop alerts.\n1. Yes, send request\n2. No, show someone else\n\nType 'menu' for the main menu.",required_text=match['name'])
+        "\n\nThese are usual preferences, not a promise that they are online now. They will need to accept your request."
+        "\n\nTo connect, please choose:\n1. Send a connection request\n2. Show someone else\n\nWe will send connection updates. Type 'notifications off' to stop alerts.\n\nType 'menu' for the main menu.",required_text=match['name'])
 
 
 def show_next_match(sender):

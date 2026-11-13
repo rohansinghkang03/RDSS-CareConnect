@@ -66,7 +66,7 @@ class RegistrationLanguageTests(p4.Phase4Tests):
         with conversation('English'):
             protect('1','Private Name')
             reply=organize('synthetic-a','Review your application\nDisplay name: 1\n\n1. Continue to consent\n2. Edit an answer\n3. Cancel application','buddy_registration_review')
-        self.assertLess(reply.index("Tell me what you're looking for"),reply.index('1. Continue'))
+        self.assertLess(reply.index("Choose a number, or tell me what you need."),reply.index('1. Continue'))
         self.assertIn('Display name: 1',reply)
 
     def test_offered_language_synonyms_and_edit_choices(self):

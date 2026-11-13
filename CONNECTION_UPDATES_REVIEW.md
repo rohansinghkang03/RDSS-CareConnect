@@ -26,3 +26,11 @@ Temporary private inputs expire after 30 minutes for decisions. The existing thr
 ## Validation
 
 The complete isolated PostgreSQL test suite covers existing flows and the new language, request privacy, number-sharing, legacy compatibility, public-name editing, verification and migration cases. WhatsApp and AI calls are mocked; fixtures are synthetic. See the accompanying test log for the final result.
+
+## 10 November — compact message follow-up (uncommitted)
+
+Routine footers show Back, Menu and Help; contextual Help expands the available commands without changing progress or sending private input to AI. Primary actions stay in the message. Admin PIN screens retain only cancellation navigation. Generic choice guidance is shorter. Invalid consent replies repeat the choices without the full screen; original consent disclosures and explicit numbered decisions remain intact.
+
+Registration and admin reviews preview introductions longer than 160 characters. `full introduction` displays the exact stored text without changing it; admin access still requires the current authorised session. Status, verification and decision options appear before admin application details. Profile privacy has a short summary and `privacy details` for the explanation. Fixed Malay profile wording is preserved. Only the public display name is editable in the Support Buddy profile; other application fields are outside this change.
+
+These edits remain local and uncommitted, alongside the screenshot fixes. Safety-conversation recording remains a proposal only.

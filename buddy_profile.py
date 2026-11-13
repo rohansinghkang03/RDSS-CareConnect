@@ -20,7 +20,7 @@ def show(sender,notice=''):
         sharing=upfront_authorized(c,sender,app['id'])
     finally:c.close()
     update_user(sender,state='buddy_profile_menu')
-    return caregiver_message(sender,(notice+'\n\n' if notice else '')+'Your Support Buddy profile 💜\n\nDisplay name: '+(app['display_name'] or 'Support Buddy')+'\nApplication status: '+app['status'].capitalize()+'\nBuddy WhatsApp-sharing permission: '+('Enabled' if sharing else 'Not enabled')+"\n\nYou can correct your public display name. Your private full name, approval, verification and consent stay unchanged.\n\n1. Edit display name\n2. Return to profile and privacy settings\n3. WhatsApp-sharing permission")
+    return caregiver_message(sender,(notice+'\n\n' if notice else '')+'Your Support Buddy profile 💜\n\nDisplay name: '+(app['display_name'] or 'Support Buddy')+'\nApplication status: '+app['status'].capitalize()+'\nBuddy WhatsApp-sharing permission: '+('Enabled' if sharing else 'Not enabled')+"\n\nYou can update your public display name here.\n\n1. Edit display name\n2. Return to profile and privacy settings\n3. WhatsApp-sharing permission")
 
 def prepare_name(sender,value):
     value=validate_name(value);c=get_connection()
