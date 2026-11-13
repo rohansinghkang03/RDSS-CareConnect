@@ -2,7 +2,7 @@
 import hashlib
 import json
 import os
-from database import get_connection
+from database import get_connection,update_user
 from match_browsing import preference_key
 from profile_validation import is_safe_profile_value
 
@@ -47,6 +47,13 @@ def begin(sender):
                 c.execute('INSERT INTO connection_request_drafts(sender,buddy_id,buddy_sender,preference_key) VALUES(?,?,?,?)',(sender,p['buddy_id'],p['buddy_sender'],prefs))
             c.execute("UPDATE users SET state='match_request_name' WHERE sender=?",(sender,))
     finally:c.close()
+    from basic_profile import enabled as basic_enabled,get
+    if basic_enabled():
+        profile=get(sender)
+        if not profile:raise PermissionError('Complete your basic profile first')
+        save(sender,'chosen_name',profile['display_name'])
+        update_user(sender,state='match_request_message')
+        return message_prompt()
     return name_prompt()
 def name_prompt():return "What name or nickname would you like this buddy to see? 💜\nUse up to 60 characters. Leave out phone numbers and identifying details about someone else. Nothing is sent until you review and confirm."
 def message_prompt():return "What would you like to say to this buddy? 💜\nYou can briefly describe what you'd like to talk about (up to 300 characters), or type 'skip'. Leave out phone numbers, addresses and identifying details about someone else. Your private AI chat and saved profile are not copied here."
@@ -65,6 +72,7 @@ def save(sender,field,value):
     finally:c.close()
 def _review_key(draft):return key(draft['buddy_id'],draft['buddy_sender'],draft['preference_key'],draft['chosen_name'],draft['message'],NOTICE)
 def review(sender):
+    from basic_profile import enabled as basic_enabled
     from conversation_context import protect
     c=get_connection()
     try:
@@ -76,7 +84,7 @@ def review(sender):
             protect(p['caregiver_name'],d['chosen_name'],d['message'])
             return ('Review your request to '+p['caregiver_name']+' 💜\n\nName shown: '+d['chosen_name']+'\nYour message: '+(d['message'] or 'No personal message')+
                     '\nSupport wanted: '+str(p['support_type'] or '')+'\nPreferred time: '+str(p['availability'] or '')+'\n\n'+consent_text()+
-                    '\n\n1. Send request and agree to this number sharing\n2. Edit my name\n3. Edit my message\n4. Cancel without sending\n\nPlease choose 1 only if you agree. AI cannot make this decision for you.')
+                    '\n\n1. Send request and agree to this number sharing\n2. '+('Edit my basic profile' if basic_enabled() else 'Edit my name')+'\n3. Edit my message\n4. Cancel without sending\n\nPlease choose 1 only if you agree. AI cannot make this decision for you.')
     finally:c.close()
 def validated_for_send(c,sender,p):
     d=_draft(c,sender,p)
@@ -84,6 +92,10 @@ def validated_for_send(c,sender,p):
     fresh=c.execute("SELECT reviewed_at>CURRENT_TIMESTAMP-INTERVAL '30 minutes' FROM connection_request_drafts WHERE sender=?",(sender,)).fetchone()
     if not fresh or not fresh[0]:raise PermissionError('Review expired; please review again before sending')
     if not is_safe_profile_value(d['chosen_name']) or (d['message'] and not is_safe_profile_value(d['message'])):raise PermissionError('Introduction no longer passes privacy checks')
+    from basic_profile import enabled as basic_enabled
+    if basic_enabled():
+        profile=c.execute('SELECT display_name FROM basic_profiles WHERE sender=? FOR SHARE',(sender,)).fetchone()
+        if not profile or profile['display_name']!=d['chosen_name']:raise PermissionError('Your shared display name changed. Please prepare and review the request again.')
     return d
 def pair_key(row):
     from match_chat_store import _key
@@ -140,6 +152,8 @@ def handle(sender,text,state):
             return "Your request was cancelled. Nothing was sent and no number-sharing permission was granted. 💜"
         if state=='match_request_name':save(sender,'chosen_name',text);update_user(sender,state='match_request_message');return message_prompt()
         if state=='match_request_message':save(sender,'message',text);return review(sender)
+        from basic_profile import enabled as basic_enabled,begin as begin_basic
+        if command=='2' and basic_enabled():return begin_basic(sender,'request')
         if command in {'2','3'}:
             next_state='match_request_name' if command=='2' else 'match_request_message';update_user(sender,state=next_state);return current_screen(sender,next_state)
         if command=='1':
@@ -149,7 +163,10 @@ def handle(sender,text,state):
                 from match_chat import screen
                 return screen(sender,row['id'])
             if outcome=='unavailable':return "That buddy is no longer available. Nothing was sent. Type 'menu' to search again."
-            if row:return "Your request has been sent. 💜\nConnection request #"+str(row['id'])+" is pending. Your chosen name and message are shared with this buddy; your number is only released after both permissions are in place. Type 'status' to check it."
+            if row:
+                from conversation_context import protect
+                protect(row.get('caregiver_name'))
+                return "Your request to "+(row.get('caregiver_name') or 'this buddy')+" has been sent. 💜\nConnection request #"+str(row['id'])+" is pending. Your chosen name and message are shared with this buddy; your number is only released after both permissions are in place. Type 'status' to check it."
             return "There is no current request preview. Nothing new was sent. Type 'menu' to search again."
         return 'Please choose the numbered option so your sharing decision is explicit.\n\n'+review(sender)
     except ValueError as error:return str(error)+'\n\n'+current_screen(sender,state)

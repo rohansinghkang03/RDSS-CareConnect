@@ -147,6 +147,11 @@ def introduction_preview(value):
 
 def registration_review(sender):
     draft = get_support_buddy_draft(sender)
+    from basic_profile import enabled as basic_enabled,get as get_basic
+    if draft and basic_enabled() and get_basic(sender):
+        shared=get_basic(sender)
+        update_support_buddy_draft(sender,display_name=shared['display_name'],languages=shared['chat_languages'])
+        draft=get_support_buddy_draft(sender)
     if not draft:
         reset_user(sender)
         return caregiver_message(sender, "No registration draft found. Type 'menu' and choose 4 to begin.")
@@ -253,12 +258,19 @@ def application_status_reply(sender):
 
 
 def begin_registration(sender):
+    from basic_profile import enabled as basic_enabled,get,begin
+    if basic_enabled() and not get(sender):return begin(sender,'volunteer')
     application = get_support_buddy_application(sender)
     if application and application["status"] not in ("rejected", "declined"):
         return application_status_reply(sender)
     track_usage_safely(sender, "buddy_application_started")
     start_support_buddy_draft(sender)
     draft = get_support_buddy_draft(sender)
+    from basic_profile import enabled as basic_enabled,get as get_basic
+    if draft and basic_enabled() and get_basic(sender):
+        shared=get_basic(sender)
+        update_support_buddy_draft(sender,display_name=shared['display_name'],languages=shared['chat_languages'])
+        draft=get_support_buddy_draft(sender)
     return (
         caregiver_message(sender, "Become a Support Buddy 💜")
         + "\n\n"
@@ -371,6 +383,7 @@ def admin_application_id_for_choice(choice):
 
 
 def handle_admin_message(sender, text, state):
+    from database import get_connection
     if sender not in ADMIN_PHONE_NUMBERS:
         if state.startswith("admin_"):
             update_user(sender, state="main_menu")
@@ -385,7 +398,21 @@ def handle_admin_message(sender, text, state):
             update_user(sender, state="main_menu")
         return "Admin login is unavailable. Please contact the system administrator."
 
+    from basic_profile import enabled as basic_enabled
+    if basic_enabled() and state=='admin_pin' and command not in {'admin login','menu','back','admin logout'}:
+        connection=get_connection()
+        try:
+            fresh=connection.execute("SELECT 1 FROM admin_login_prompts WHERE sender=? AND shown_at>CURRENT_TIMESTAMP-INTERVAL '15 minutes'",(sender,)).fetchone()
+        finally:connection.close()
+        if not fresh:
+            update_user(sender,state='main_menu')
+            return "Your earlier admin login has expired. Type 'admin login' when you need admin access.\n\n"+show_careconnect_menu(sender)
     if command == "admin login":
+        if basic_enabled():
+            connection=get_connection()
+            try:
+                with connection:connection.execute('INSERT INTO admin_login_prompts(sender) VALUES(?) ON CONFLICT(sender) DO UPDATE SET shown_at=CURRENT_TIMESTAMP',(sender,))
+            finally:connection.close()
         update_user(sender, state="admin_pin")
         return "Enter your admin PIN."
 
@@ -568,6 +595,11 @@ def handle_registration(sender, text, state):
     if state == "buddy_registration_submitted":
         return application_status_reply(sender)
     draft = get_support_buddy_draft(sender)
+    from basic_profile import enabled as basic_enabled,get as get_basic
+    if draft and basic_enabled() and get_basic(sender):
+        shared=get_basic(sender)
+        update_support_buddy_draft(sender,display_name=shared['display_name'],languages=shared['chat_languages'])
+        draft=get_support_buddy_draft(sender)
     if draft is None:
         reset_user(sender)
         return "No registration draft found. Type 'menu' and choose 4 to begin."
@@ -624,6 +656,8 @@ def handle_registration(sender, text, state):
         if answer not in choices:
             return "Please choose an answer from 1 to 9, or 0 to return to review."
         step = choices[answer]
+        from basic_profile import enabled as basic_enabled,begin
+        if basic_enabled() and step in {'display_name','languages'}:return begin(sender,'volunteer')
         update_user(sender, state="buddy_registration_edit_" + step)
         return registration_prompt(step)
     editing = state.startswith("buddy_registration_edit_")
@@ -654,6 +688,11 @@ def handle_registration(sender, text, state):
     if step == "name":
         update_user(sender, full_name=value)
     draft = get_support_buddy_draft(sender)
+    from basic_profile import enabled as basic_enabled,get as get_basic
+    if draft and basic_enabled() and get_basic(sender):
+        shared=get_basic(sender)
+        update_support_buddy_draft(sender,display_name=shared['display_name'],languages=shared['chat_languages'])
+        draft=get_support_buddy_draft(sender)
     return registration_destination(sender, "review" if editing else next_registration_step(draft))
 
 
@@ -1092,6 +1131,8 @@ def select_careconnect_language(sender, answer):
     if resume!='main_menu':
         from conversation_routing import current_screen
         return current_screen(sender,resume)
+    from basic_profile import enabled as basic_enabled,get,begin
+    if basic_enabled() and not get(sender):return begin(sender)
     return show_careconnect_menu(sender)
 
 
@@ -1277,6 +1318,13 @@ def _handle_message(sender, text):
     if buddy_reply is not None:
         return buddy_reply
 
+    from basic_profile import handle as handle_basic_profile
+    basic_reply=handle_basic_profile(sender,original_text,state)
+    if basic_reply is not None:return basic_reply
+    from buddy_directory import handle as handle_directory
+    directory_reply=handle_directory(sender,original_text,state)
+    if directory_reply is not None:return directory_reply
+
     from profile_navigation import handle_profile_navigation
     profile_reply = handle_profile_navigation(sender, text, state, original_text)
     if profile_reply is not None:
@@ -1418,6 +1466,8 @@ def _handle_message(sender, text):
                 return message
 
         if text == "1":
+            from basic_profile import enabled as basic_enabled,preferences
+            if basic_enabled():return preferences(sender)
             from match_browsing import reset as reset_browsing
             reset_browsing(sender)
             track_usage_safely(sender, "buddy_search_started")
@@ -1493,6 +1543,8 @@ def _handle_message(sender, text):
                 )
 
         elif text == "6":
+            from basic_profile import enabled as basic_enabled,show
+            if basic_enabled():return show(sender)
             from profile_navigation import show_profile
             return show_profile(sender)
 
@@ -1691,6 +1743,10 @@ def _handle_message(sender, text):
                     "What kind of support would help you most?"
                 )
 
+        from basic_profile import enabled as basic_enabled
+        if basic_enabled():
+            from buddy_directory import show
+            return show(sender,fresh=True)
         matches = find_matches(user)
 
         if os.getenv('REPORTING_ENABLED','').lower()=='true':

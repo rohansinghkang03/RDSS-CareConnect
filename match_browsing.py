@@ -4,7 +4,9 @@ import json
 from database import get_connection
 
 def preference_key(user):
-    return hashlib.sha256(json.dumps([user.get('support_type'),user.get('availability')],ensure_ascii=False).encode()).hexdigest()
+    from basic_profile import enabled,get
+    profile=get(user.get('sender') or user.get('requester')) if enabled() else None
+    return hashlib.sha256(json.dumps([user.get('support_type'),user.get('availability'),profile['chat_languages'] if profile else None],ensure_ascii=False).encode()).hexdigest()
 
 def remember(connection,sender,match,user):
     connection.execute('''INSERT INTO match_search_sessions(sender,preference_key,seen_buddies,tier)

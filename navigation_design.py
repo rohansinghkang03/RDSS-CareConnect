@@ -54,6 +54,8 @@ def organize(sender,reply,state):
     else:
         back='Main menu'
         if state.startswith(('buddy_profile_','buddy_contact_')):back='Support Buddy profile' if state!='buddy_profile_menu' else 'Profile and privacy settings'
+        elif state.startswith('basic_'):back='Previous profile screen'
+        elif state in {'buddy_directory','directory_detail'}:back='Buddy list'
         elif state.startswith('profile_') or state=='profiling_consent':back='Previous profile screen'
         elif state.startswith('buddy_registration_') and state!='buddy_registration_submitted':back='Previous application step'
         elif state=='resources_detail':back='Resource categories'
@@ -92,7 +94,7 @@ def organize(sender,reply,state):
         commands=commands[:2]+[('help','More commands')]
     # Conversational guidance only on non-sensitive choice screens.
     if re.search(r'^\s*[1-9][.]',body,re.M):
-        sensitive=state in {'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm','buddy_registration_consent','buddy_registration_cancel','confirm_match','match_request_review','buddy_profile_confirm','buddy_contact_consent'} or state.startswith(('admin_review_','contact_share_'))
+        sensitive=state in {'basic_review','profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm','buddy_registration_consent','buddy_registration_cancel','confirm_match','match_request_review','buddy_profile_confirm','buddy_contact_consent'} or state.startswith(('admin_review_','contact_share_'))
         private_admin=state.startswith(('admin_pin','admin_note_','admin_verify_'))
         if not sensitive and not private_admin:
             invitation="Choose a number, or tell me what you need."

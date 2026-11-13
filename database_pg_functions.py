@@ -647,6 +647,8 @@ def create_selected_match_request(requester):
                 connection.execute("UPDATE users SET state = 'main_menu' WHERE sender = ?", (requester,))
                 return "unavailable", None
 
+            from basic_profile import enabled as basic_enabled,assert_shared
+            if basic_enabled():assert_shared(connection,requester,preview['buddy_sender'])
             accepted=connection.execute("SELECT * FROM match_requests WHERE status='accepted' AND ((requester=? AND buddy_sender=?) OR (requester=? AND buddy_sender=?)) ORDER BY id DESC LIMIT 1",(requester,preview['buddy_sender'],preview['buddy_sender'],requester)).fetchone()
             if accepted:
                 connection.execute('DELETE FROM match_previews WHERE requester=?',(requester,))
@@ -744,6 +746,8 @@ def respond_to_buddy_request(sender, request_id, decision):
                 return "already_resolved", dict(row)
             if decision == "accepted" and not _eligible_buddy(connection, row["buddy_id"], sender):
                 return "unavailable", dict(row)
+            from basic_profile import enabled as basic_enabled,assert_shared
+            if decision=='accepted' and basic_enabled():assert_shared(connection,row['requester'],sender)
             from connection_requests import enabled as intro_enabled,acceptance_authorized
             if decision=='accepted' and intro_enabled():
                 from connection_requests import upfront_authorized
@@ -955,6 +959,13 @@ def review_support_buddy_application(application_id, action, notes, actor, versi
 
 
 def get_approved_support_buddies():
+    from basic_profile import enabled
+    if enabled():
+        connection=get_connection()
+        try:
+            rows=connection.execute("""SELECT a.id,a.sender,b.display_name AS name,a.support_types,a.availability,b.chat_languages AS languages,a.contact_methods,a.introduction FROM support_buddy_applications a JOIN basic_profiles b ON b.sender=a.sender WHERE a.status='approved' AND a.submitted_at IS NOT NULL AND a.consent=1 AND (a.verification_required=0 OR a.verified_at IS NOT NULL) ORDER BY a.id""").fetchall()
+            return [dict(row) for row in rows]
+        finally:connection.close()
     connection = get_connection()
 
     try:

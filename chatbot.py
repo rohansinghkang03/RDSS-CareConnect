@@ -272,7 +272,7 @@ def communication_instructions():
     context=current.get()
     if not context or not context['language']:return ''
     from conversation_script import writing_instructions
-    return ('\nEstablished response language and style: '+target()+'. Preserve this on short/neutral replies. Match the latest substantive message when it clearly changes language.\n'
+    return ("Use natural sentences and short paragraphs. Avoid em dashes and en dashes in your own prose; use commas or full stops. Preserve user-provided text and literal commands exactly.\n"+'\nEstablished response language and style: '+target()+'. Preserve this on short/neutral replies. Match the latest substantive message when it clearly changes language.\n'
             +writing_instructions(context['language'],context['style']))
 
 def readable_generated_reply(reply,feature='AI Chat'):

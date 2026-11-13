@@ -27,7 +27,7 @@ OPTIONS={
  'buddy_registration_consent':{'1':'I agree, submit application','2':'Back to review without submitting','3':'Cancel application'},
  'buddy_registration_cancel':{'1':'Yes, cancel and delete draft','2':'Keep draft'},
 }
-SENSITIVE={'buddy_contact_consent','buddy_profile_confirm','match_request_review', 'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm',
+SENSITIVE={'basic_review','buddy_contact_consent','buddy_profile_confirm','match_request_review', 'profiling_consent','profile_review','profile_review_confirm','profile_withdraw_confirm',
            'buddy_registration_consent','buddy_registration_cancel','confirm_match'}
 SHORT={'yes','no','ok','okay','yup','yeah','thanks','thank you','hi','hello','hey','ya','tak','boleh','சரி','ஆம்','是','好','好的'}
 EXPLICIT_CHOICES={
@@ -41,11 +41,11 @@ EXPLICIT_CHOICES={
 }
 COMMANDS={'menu','profile','my profile','my status','status','application status','application_status',
           'requests','review profile','withdraw profile consent','back','cancel','hi','hello','hey','start'}
-DIRECT_DESTINATIONS={'resources':'3','resource hub':'3','ai chat':'2','find a buddy':'1',
+DIRECT_DESTINATIONS={'resources':'3','resource hub':'3','ai chat':'2','find a buddy':'1','find support buddy':'1','find a support buddy':'1','find buddy':'1',
                      'become a buddy':'4','contact rdss':'5'}
 
 def private_field(state):
-    return state in {'buddy_profile_name','match_request_name','match_request_message','profile_review_edit','buddy_registration_name','buddy_registration_display_name',
+    return state in {'basic_name','basic_languages','basic_other','buddy_profile_name','match_request_name','match_request_message','profile_review_edit','buddy_registration_name','buddy_registration_display_name',
         'buddy_registration_introduction','buddy_registration_edit_name','buddy_registration_edit_display_name',
         'buddy_registration_edit_introduction'}
 
@@ -61,6 +61,16 @@ def private_navigation(command):
     return None
 
 def options_for(state):
+    from basic_profile import enabled as basic_enabled,SUPPORT,TIMES
+    if basic_enabled():
+        if state=='basic_buddy_apply':return {'1':'Apply to become a Support Buddy','2':'Return to my profile'}
+        if state=='buddy_directory':return {}
+        if state=='basic_menu':return {'1':'Edit my basic details','2':'My matching preferences','3':'My Support Buddy profile','4':'AI profile and privacy settings','5':'Main menu'}
+        if state=='basic_preferences':return {'1':'Show potential buddies','2':'Change my preferences'}
+        if state=='basic_support':return SUPPORT
+        if state=='basic_time':return TIMES
+        if state=='basic_review':return {'1':'Save my basic profile','2':'Edit an answer'}
+        if state=='directory_detail':return {'1':'Prepare a connection request','2':'Return to the buddy list'}
     from handlers import REGISTRATION_OPTIONS,REGISTRATION_FIELDS
     if state.startswith('contact_share_'):return {'1':'I agree to share my WhatsApp number with this accepted match','2':'Not now; do not share my number'}
     if state=='status_menu':
@@ -73,6 +83,19 @@ def options_for(state):
 def current_screen(sender,state):
     import handlers as h
     import profile_navigation as p
+    from basic_profile import enabled as basic_enabled,screen,preferences,support_prompt,time_prompt
+    if basic_enabled():
+        if state=='basic_support':return support_prompt()
+        if state=='basic_time':return time_prompt()
+        if state=='basic_preferences':return preferences(sender)
+        if state.startswith('basic_'):return screen(sender,state)
+        if state in {'buddy_directory','directory_detail'}:
+            from buddy_directory import show,session,select
+            if state=='directory_detail':
+                from match_browsing import preview
+                chosen=preview(sender);s=session(sender)
+                if chosen and s and chosen['buddy_id'] in s['buddy_ids']:return select(sender,s['buddy_ids'].index(chosen['buddy_id'])+1)
+            return show(sender)
     from database import get_support_buddy_draft
     if state.startswith(('contact_share_','contact_chat_')):
         from match_chat import screen
@@ -209,8 +232,8 @@ def explicit_choice_prompt(sender,state):
             return 'To connect with '+name+', please reply with a number:\n\n1. '+first+'\n2. Show someone else\n\nNothing has been sent yet.'
     choices=options_for(state)
     if choices:
-        return 'Please reply with the number shown. Nothing has been confirmed yet.\n\n'+'\n'.join(key+'. '+label for key,label in choices.items())
-    return 'Please reply with the number shown. Nothing has been confirmed yet.\n\n'+current_screen(sender,state)
+        return 'Please confirm using the number shown. Nothing has been confirmed yet.\n\n'+'\n'.join(key+'. '+label for key,label in choices.items())
+    return 'Please confirm using the number shown. Nothing has been confirmed yet.\n\n'+current_screen(sender,state)
 
 
 def prepare(sender,text,user):
@@ -274,6 +297,20 @@ def prepare(sender,text,user):
     if command=='language' and state!='language_selection':
         ai.resume_language_screen(sender,state)
         return text,None
+    from basic_profile import enabled as basic_enabled,handle as handle_basic
+    if basic_enabled():
+        from buddy_directory import handle as handle_directory
+        if state in {'buddy_directory','directory_detail'}:
+            reply=handle_directory(sender,text,state)
+            if reply is not None:return text,reply
+        if state in {'basic_name','basic_languages','basic_other'} and re.match(r'^(?:how|what|where|can you|could you)\b',command):return text,"Your answer has not been saved.\n\n"+current_screen(sender,state)
+        if state.startswith('basic_') and (command=='back' or private_field(state)) and command not in DIRECT_DESTINATIONS and private_navigation(command) is None:
+            reply=handle_basic(sender,text,state)
+            if reply is not None:return text,reply
+        if command=='back' and state=='confirm_match':
+            from buddy_directory import show
+            return text,show(sender)
+        if command in {'preferences','more','previous','refresh'} and state in {'buddy_directory','directory_detail'}:return text,None
     if command=='back':return text,go_back(sender,state)
     if command=='help':return text,current_screen(sender,state)
     if command=='my chats' or re.fullmatch(r'(?:chat|stop chat) \d{1,10}',command):return text,None
@@ -311,6 +348,10 @@ def prepare(sender,text,user):
         return '2',None
     if command in SHORT:return text,None
     options=options_for(state)
+    if basic_enabled() and state=='buddy_directory':
+        from buddy_directory import session
+        s=session(sender)
+        if s:options={str(i+1):'View buddy number '+str(i+1) for i in range(len(s['buddy_ids']))}
     if state=='match_seen':
         from match_previous import choices as previous_choices
         options={number:'Review previous suggestion '+number for number in previous_choices(sender)}
@@ -350,6 +391,9 @@ def prepare(sender,text,user):
         from match_previous import show
         return text,show(sender)
     if action=='next_match' and (state in {'confirm_match','match_alternatives'} or state.startswith('match_existing_')):return 'next buddy',None
+    if basic_enabled() and action in {'find_buddy','ai_chat','resources','volunteer','contact'}:
+        h.update_user(sender,state='main_menu')
+        return {'find_buddy':'1','ai_chat':'2','resources':'3','volunteer':'4','contact':'5'}[action],None
     if action=='back':
         return text,go_back(sender,state)
     if action=='cancel':

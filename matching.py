@@ -3,6 +3,11 @@ from database import get_approved_support_buddies, get_latest_match_request
 
 def find_matches(user):
     buddies = get_approved_support_buddies()
+    from basic_profile import enabled,get,language_set
+    redesigned=enabled()
+    profile=get(user.get('sender')) if redesigned else None
+    if redesigned and not profile:return []
+    languages=set(profile['chat_languages'].split('|')) if profile else set()
     latest_request = get_latest_match_request(user.get("sender"))
     unavailable_buddy_id = (
         latest_request.get("buddy_id")
@@ -30,6 +35,7 @@ def find_matches(user):
             if item.strip()
         }
 
+        if redesigned and not languages.intersection(set(language_set(buddy.get('languages') or '').split('|'))):continue
         score = 0
         shared_preferences = []
 
@@ -53,7 +59,7 @@ def find_matches(user):
                 shared_preferences.append("Chat times: " + preferred_time + " fits their flexible availability")
 
         # Do not recommend someone with no matching preferences.
-        if score == 0:
+        if score == 0 and not redesigned:
             continue
 
         percentage = round((score / 2) * 100)
@@ -65,14 +71,17 @@ def find_matches(user):
             "score": score,
             "percentage": percentage,
             "shared_preferences": shared_preferences,
-            "tier": 'exact' if score==2 else 'support' if user.get("support_type") in support_types else 'time',
+            "tier": 'exact' if score==2 else 'support' if user.get("support_type") in support_types else 'time' if score else 'other',
+            'languages':buddy.get('languages',''),
+            'contact_methods':(buddy.get('contact_methods') or 'WhatsApp text'),
+            'introduction':buddy.get('introduction',''),
             "offered_support": sorted(support_types),
             "offered_times": sorted(availability)
         })
 
     results.sort(
         key=lambda person: (
-            {'exact':0,'support':1,'time':2}[person['tier']],
+            {'exact':0,'support':1,'time':2,'other':3}[person['tier']],
             person["buddy_id"]
         )
     )

@@ -148,6 +148,10 @@ def health():
                 connection_updates=connection_updates_enabled()
                 cur.execute("SELECT to_regclass('connection_request_drafts') IS NOT NULL AND to_regclass('connection_request_details') IS NOT NULL AND to_regclass('connection_accept_notices') IS NOT NULL AND to_regclass('buddy_profile_edit_drafts') IS NOT NULL AND to_regclass('buddy_profile_edits') IS NOT NULL AND to_regclass('buddy_whatsapp_consent') IS NOT NULL AND to_regclass('admin_verification_drafts') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='support_buddy_applications' AND column_name='verified_by_name')")
                 connection_updates_ready=cur.fetchone()[0] if connection_updates else True
+                basic_enabled=os.getenv('BASIC_PROFILE_ENABLED','').lower()=='true'
+                cur.execute("SELECT to_regclass('basic_profiles') IS NOT NULL AND to_regclass('basic_profile_drafts') IS NOT NULL AND to_regclass('buddy_list_sessions') IS NOT NULL AND to_regclass('admin_login_prompts') IS NOT NULL")
+                basic_ready=(cur.fetchone()[0] and connection_updates) if basic_enabled else True
+        ready=ready and basic_ready
         ready=ready and (Path(__file__).parent/'report_templates'/'CareConnectStatistics_Template.xlsx').is_file()
         return {'status':'ok' if ready and conversation_ready and chat_ready and alerts_ready and connection_updates_ready else 'unavailable',
                 'reporting':'ready' if ready else 'unavailable',

@@ -12,6 +12,10 @@ def validate_name(value):
 def show(sender,notice=''):
     from handlers import caregiver_message
     app=get_support_buddy_application(sender)
+    from basic_profile import enabled as basic_enabled
+    if basic_enabled() and not app:
+        update_user(sender,state='basic_buddy_apply')
+        return caregiver_message(sender,"Become a Support Buddy 💜\n\nOffer a listening ear to another caregiver. RDSS reviews applications before they can appear in matching.\n\n1. Apply to become a Support Buddy\n2. Return to my profile")
     if not app:return caregiver_message(sender,"No submitted Support Buddy profile is available. Choose Become a Support Buddy from the main menu to apply.")
     protect(app['display_name'])
     c=get_connection()
@@ -23,6 +27,8 @@ def show(sender,notice=''):
     return caregiver_message(sender,(notice+'\n\n' if notice else '')+'Your Support Buddy profile 💜\n\nDisplay name: '+(app['display_name'] or 'Support Buddy')+'\nApplication status: '+app['status'].capitalize()+'\nBuddy WhatsApp-sharing permission: '+('Enabled' if sharing else 'Not enabled')+"\n\nYou can update your public display name here.\n\n1. Edit display name\n2. Return to profile and privacy settings\n3. WhatsApp-sharing permission")
 
 def prepare_name(sender,value):
+    from basic_profile import enabled as basic_enabled,begin
+    if basic_enabled():raise ValueError("Use My profile, then Edit my basic details to change your shared display name.")
     value=validate_name(value);c=get_connection()
     try:
         with c:
@@ -65,6 +71,8 @@ def handle(sender,text,state):
     value=text.strip();command=value.casefold()
     if command not in {'buddy profile','my buddy profile'} and not state.startswith(('buddy_profile_','buddy_contact_')):return None
     if not enabled():return "Support Buddy profile editing is not available yet. Type 'menu' for the main menu."
+    from basic_profile import enabled as basic_enabled,begin
+    if basic_enabled() and state=='buddy_profile_menu' and command=='1':return begin(sender)
     if command in {'buddy profile','my buddy profile'}:return show(sender)
     if command in {'menu','back','profile','my profile','language','status','my status','help','resources'}:return None
     if command=='cancel' or (state=='buddy_profile_confirm' and command=='2'):
