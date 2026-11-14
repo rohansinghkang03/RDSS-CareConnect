@@ -37,8 +37,16 @@ def _pair(cur,sender,request_id):
     from profile_validation import is_safe_profile_value
     label=row[9] or 'Support Buddy'
     if len(label)>100 or not is_safe_profile_value(label):label='Support Buddy'
+    partner_label=label if sender==row[0] else 'Caregiver for connection #'+str(request_id)
+    from basic_profile import enabled as basic_enabled
+    if basic_enabled():
+        # Only look up the counterpart after validating this accepted relationship.
+        counterpart=row[1] if sender==row[0] else row[0]
+        cur.execute('SELECT display_name FROM basic_profiles WHERE sender=%s',(counterpart,))
+        profile=cur.fetchone()
+        if profile and 1<=len(profile[0])<=60 and is_safe_profile_value(profile[0]):partner_label=profile[0]
     return {'participants':(row[0],row[1]),'key':_key(request_id,row[0],row[1],row[8]),
-            'partner_label':label if sender==row[0] else 'Caregiver for connection #'+str(request_id)}
+            'partner_label':partner_label}
 
 def _permissions(cur,request_id,pair):
     cur.execute('''SELECT sender,decision FROM match_chat_permissions WHERE request_id=%s

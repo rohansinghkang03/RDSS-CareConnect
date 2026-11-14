@@ -69,9 +69,9 @@ def show_profile(sender, notice=None):
 
 
 def consent_prompt(sender):
-    from handlers import PROFILING_CONSENT_PROMPT
+    from handlers import profiling_consent_text
     update_user(sender, state='profiling_consent')
-    return profile_text(sender, PROFILING_CONSENT_PROMPT)
+    return profile_text(sender, profiling_consent_text())
 
 
 def suggestion_message(sender, suggestion):

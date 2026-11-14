@@ -1004,11 +1004,24 @@ def caregiver_message(sender, message, required_text=None):
 
 
 
+def profiling_consent_text():
+    from basic_profile import enabled as basic_enabled
+    if basic_enabled():
+        return PROFILING_CONSENT_PROMPT.replace('choose 6 (My profile), then 3 (Withdraw permission)', 'choose 6 (My profile), then 4 (AI profile and privacy settings), then 3 (Withdraw permission)')
+    return PROFILING_CONSENT_PROMPT
+
+
 def show_careconnect_menu(sender):
     track_usage_safely(sender, "main_menu_opened")
     from conversation_context import current
     from match_chat_store import enabled
     message=MAIN_MENU_MESSAGE
+    from basic_profile import enabled as basic_enabled,get
+    if basic_enabled():
+        profile=get(sender)
+        if profile:
+            protect(profile['display_name'])
+            message=message.replace('How can I support you today? 💜', 'Hello '+profile['display_name']+'! 💜\nWhat would you like to do today?')
     if enabled():message+="\n\nType 'my chats' for accepted connections and contact-sharing settings."
     if current.get():return message
     language = get_matching_language_example(sender)

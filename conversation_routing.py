@@ -116,7 +116,7 @@ def current_screen(sender,state):
     if state=='main_menu':return h.show_careconnect_menu(sender)
     if state=='language_selection':return h.LANGUAGE_SELECTION_MESSAGE
     if state=='profile_menu':return p.show_profile(sender)
-    if state=='profiling_consent':return h.PROFILING_CONSENT_PROMPT
+    if state=='profiling_consent':return h.profiling_consent_text()
     if state in {'profile_review','profile_review_confirm'}:
         pending=p.profiles.get_pending_profile_suggestion(sender)
         if pending:

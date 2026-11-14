@@ -35,7 +35,9 @@ def language_set(value):
     if not result or len(result)>12:raise ValueError('Please list between 1 and 12 languages.')
     return '|'.join(result)
 def begin(sender,destination='profile'):
-    saved=get(sender);c=get_connection()
+    saved=get(sender)
+    if not saved and destination=='profile':destination='welcome'
+    c=get_connection()
     try:
         with c:c.execute('INSERT INTO basic_profile_drafts(sender,display_name,chat_languages,destination) VALUES(?,?,?,?) ON CONFLICT(sender) DO UPDATE SET display_name=EXCLUDED.display_name,chat_languages=EXCLUDED.chat_languages,destination=EXCLUDED.destination,updated_at=CURRENT_TIMESTAMP',(sender,saved['display_name'] if saved else None,saved['chat_languages'] if saved else None,destination))
     finally:c.close()
@@ -134,6 +136,10 @@ def handle(sender,text,state):
         if command=='2':update_user(sender,state='basic_name');return screen(sender,'basic_name')
         if command!='1':return 'Please reply 1 to save or 2 to edit. Nothing has been saved.'
         destination=save(sender)
+        if destination=='welcome':
+            update_user(sender,state='main_menu')
+            from handlers import show_careconnect_menu
+            return show_careconnect_menu(sender)
         if destination=='request':
             from connection_requests import begin as begin_request
             return begin_request(sender)
